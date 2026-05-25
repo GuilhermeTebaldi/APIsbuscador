@@ -6,6 +6,7 @@ const ROOT = process.cwd();
 const APIS_MD_PATH = path.join(ROOT, "apis.md");
 const SECRET_DIR = path.join(ROOT, ".site-secret");
 const OUTPUT_JSON = path.join(SECRET_DIR, "collected_apis.json");
+const STATIC_CATALOG_PATH = path.join(ROOT, "public", "apis-catalog.json");
 
 const HEADER_RE = /^nome\s*\t\s*api direta\s*\t\s*fun[cç][aã]o/i;
 const URL_RE = /^https?:\/\/\S+/i;
@@ -157,11 +158,12 @@ function parseEntriesFromMd(mdText) {
 
       // Padrão com status: ✅ <TAB> Nome <TAB> URL <TAB> Função
       if (cols.length >= 4) {
+        const cStatusRaw = (cols[0] || "").trim();
         const cStatus = cleanText(cols[0] || "");
         const cName = cleanText(cols[1] || "");
         const cUrl = cleanText(cols[2] || "");
         const cFunc = cleanText(cols[3] || "");
-        if ((cStatus.includes("✅") || cStatus.toLowerCase() === "ok") && isUrl(cUrl)) {
+        if ((cStatusRaw.includes("✅") || cStatus.toLowerCase() === "ok" || cStatus === "") && isUrl(cUrl)) {
           parsed.push({ name: cName, url: cUrl, func: cFunc || "API pública", source: "tab-status" });
           candidateName = "";
           candidateHint = "";
@@ -235,7 +237,8 @@ function buildCatalog(entries) {
     const url = cleanText(item.url);
     if (!name || !isUrl(url)) continue;
 
-    const { category, subcategory } = pickCategory(name, func, url);
+    const { category: groupCategory, subcategory } = pickCategory(name, func, url);
+    const realCategory = func || "API pública";
     const auth = guessAuth(name, func, url);
     const idSeed = slugify(name);
     const urlHash = crypto.createHash("md5").update(normalizeUrl(url)).digest("hex").slice(0, 6);
@@ -249,8 +252,9 @@ function buildCatalog(entries) {
       id,
       name,
       description: `${func}.`,
-      category,
+      category: realCategory,
       subcategory,
+      groupCategory,
       url: baseUrlOf(url),
       docsUrl: url,
       endpoints: [toEndpoint(url, name)],
@@ -270,17 +274,35 @@ function rewriteApisMd(catalog) {
   const lines = [];
   lines.push("Legenda:");
   lines.push("✅ = importada para o sistema");
-  lines.push("Status\tNome\tAPI direta\tFunção\tCategoria\tSubcategoria");
+  lines.push("Status\tNome\tAPI direta\tFunção\tCategoria Real\tGrupo\tSubcategoria");
 
   for (const api of catalog) {
     const endpoint = api.docsUrl;
     const func = api.description.replace(/\.$/, "");
-    lines.push(`✅\t~~${api.name}~~\t${endpoint}\t${func}\t${api.category}\t${api.subcategory}`);
+    lines.push(`✅\t~~${api.name}~~\t${endpoint}\t${func}\t${api.category}\t${api.groupCategory || 'Utilidades'}\t${api.subcategory}`);
   }
 
   lines.push("");
   lines.push(`Total importado: ${catalog.length} APIs`);
   fs.writeFileSync(APIS_MD_PATH, `${lines.join("\n")}\n`, "utf-8");
+}
+
+function loadFallbackEntriesFromStaticCatalog() {
+  if (!fs.existsSync(STATIC_CATALOG_PATH)) return [];
+  try {
+    const arr = JSON.parse(fs.readFileSync(STATIC_CATALOG_PATH, "utf-8"));
+    if (!Array.isArray(arr)) return [];
+    return arr
+      .filter((item) => item && item.name && item.docsUrl)
+      .map((item) => ({
+        name: cleanText(item.name),
+        url: cleanText(item.docsUrl),
+        func: cleanText(String(item.description || "API pública").replace(/\.$/, "")),
+        source: "fallback-static"
+      }));
+  } catch {
+    return [];
+  }
 }
 
 function main() {
@@ -289,7 +311,14 @@ function main() {
   }
 
   const md = fs.readFileSync(APIS_MD_PATH, "utf-8");
-  const entries = parseEntriesFromMd(md);
+  let entries = parseEntriesFromMd(md);
+  if (entries.length === 0) {
+    const fallbackEntries = loadFallbackEntriesFromStaticCatalog();
+    if (fallbackEntries.length > 0) {
+      entries = fallbackEntries;
+      console.log(`[import-apis-md] apis.md sem linhas válidas; usando fallback de ${STATIC_CATALOG_PATH}.`);
+    }
+  }
   const catalog = buildCatalog(entries);
 
   fs.mkdirSync(SECRET_DIR, { recursive: true });

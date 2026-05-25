@@ -58,6 +58,7 @@ export default function App() {
   const [isFallback, setIsFallback] = useState(false);
   const [totalApis, setTotalApis] = useState<number>(55);
   const [offlineCatalog, setOfflineCatalog] = useState<FreeApiInfo[] | null>(null);
+  const [backendApiAvailable, setBackendApiAvailable] = useState(false);
 
   // States per Card
   const [cardQueryParams, setCardQueryParams] = useState<Record<string, Record<string, string>>>({});
@@ -119,6 +120,10 @@ export default function App() {
   };
 
   const getApiParentCategory = (api: FreeApiInfo): string => {
+    if (api.groupCategory && api.groupCategory.trim()) {
+      return api.groupCategory.trim();
+    }
+
     const sub = getApiSubcategory(api);
     if (["Clima & Tempo", "Fronteiras & Países", "Espaço & NASA"].includes(sub)) return "Geografia & Clima";
     if (["Pokémon", "Yu-Gi-Oh!", "Animes & Cultura Pop"].includes(sub)) return "Jogos & Quadrinhos";
@@ -214,12 +219,24 @@ export default function App() {
 
   const fetchInitialApis = async () => {
     setLoading(true);
+    const isStaticVercelRuntime =
+      typeof window !== 'undefined' && window.location.hostname.endsWith('vercel.app');
+
+    if (isStaticVercelRuntime) {
+      setBackendApiAvailable(false);
+      await applyOfflineFallback();
+      setLoading(false);
+      return;
+    }
+
     try {
       const res = await fetch('/api/defaults');
       const data = await parseJsonResponse(res);
       applyApisPayload(data, 'APIs Recomendadas');
+      setBackendApiAvailable(true);
     } catch (e) {
-      console.error("Falha ao carregar defaults:", e);
+      console.warn("Backend /api/defaults indisponível. Modo offline ativo.");
+      setBackendApiAvailable(false);
       await applyOfflineFallback();
     } finally {
       setLoading(false);
@@ -234,6 +251,14 @@ export default function App() {
       return;
     }
 
+    const isStaticVercelRuntime =
+      typeof window !== 'undefined' && window.location.hostname.endsWith('vercel.app');
+    if (isStaticVercelRuntime) {
+      setBackendApiAvailable(false);
+      await applyOfflineFallback(activeTerm);
+      return;
+    }
+
     setLoading(true);
     try {
       const res = await fetch('/api/search', {
@@ -243,8 +268,10 @@ export default function App() {
       });
       const data = await parseJsonResponse(res);
       applyApisPayload(data, activeTerm);
+      setBackendApiAvailable(true);
     } catch (err) {
-      console.error("Erro na busca de APIs:", err);
+      console.warn("Backend /api/search indisponível. Busca local offline ativa.");
+      setBackendApiAvailable(false);
       await applyOfflineFallback(activeTerm);
     } finally {
       setLoading(false);
@@ -347,6 +374,22 @@ export default function App() {
 
     const targetUrl = `${api.url}${finalPath}${queryStr}`;
 
+    if (!backendApiAvailable) {
+      setCardResults(prev => ({
+        ...prev,
+        [api.id]: {
+          ok: false,
+          status: 503,
+          durationMs: 0,
+          error: "Proxy do backend indisponível neste deploy. Teste real funciona quando o servidor Node /api/proxy estiver ativo.",
+          data: api.sampleResponse || null,
+          url: targetUrl
+        }
+      }));
+      setCardLoading(prev => ({ ...prev, [api.id]: false }));
+      return;
+    }
+
     try {
       const response = await fetch('/api/proxy', {
         method: 'POST',
@@ -356,6 +399,12 @@ export default function App() {
           method: ep.method || 'GET'
         })
       });
+
+      const contentType = response.headers.get('content-type') || '';
+      if (!contentType.toLowerCase().includes('application/json')) {
+        const text = await response.text();
+        throw new Error(`Proxy respondeu não-JSON [${response.status}]: ${text.slice(0, 120)}`);
+      }
 
       const json = await response.json();
       setCardResults(prev => ({
@@ -373,8 +422,10 @@ export default function App() {
         ...prev,
         [api.id]: {
           ok: false,
+          status: 503,
+          durationMs: 0,
           error: err.message || "Erro na requisição externa.",
-          data: null,
+          data: api.sampleResponse || null,
           url: targetUrl
         }
       }));
@@ -2270,24 +2321,31 @@ export default function App() {
 
               {/* TIMING STATISTICS HEADER */}
               {currentResult && (
-                <div className={`px-3 py-2 rounded-xl text-xs font-mono flex items-center justify-between gap-2 border ${
+                <div className={`px-3 py-2 rounded-xl text-xs font-mono border ${
                   currentResult.ok 
                     ? 'bg-emerald-50 text-emerald-700 border-emerald-250' 
                     : 'bg-rose-50 text-rose-700 border-rose-250'
                 }`}>
-                  <span className="truncate max-w-sm">
-                    Status: <strong className="font-sans font-bold text-sm bg-white/70 px-1.5 py-0.5 rounded border border-current">{currentResult.status}</strong> · Latência: <strong>{currentResult.durationMs}ms</strong>
-                  </span>
-                  {currentResult.ok ? (
-                    <span className="flex items-center gap-1 font-black shrink-0 uppercase tracking-widest text-[10.5px]">
-                      <Check className="w-4 h-4 text-emerald-600 shrink-0" />
-                      Status OK [Sucesso]
+                  <div className="flex items-center justify-between gap-2">
+                    <span className="truncate max-w-sm">
+                      Status: <strong className="font-sans font-bold text-sm bg-white/70 px-1.5 py-0.5 rounded border border-current">{currentResult.status ?? 'N/A'}</strong> · Latência: <strong>{currentResult.durationMs ?? 0}ms</strong>
                     </span>
-                  ) : (
-                    <span className="flex items-center gap-1 font-black shrink-0 uppercase tracking-widest text-[10.5px]">
-                      <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
-                      Erro Interno ou Falha 
-                    </span>
+                    {currentResult.ok ? (
+                      <span className="flex items-center gap-1 font-black shrink-0 uppercase tracking-widest text-[10.5px]">
+                        <Check className="w-4 h-4 text-emerald-600 shrink-0" />
+                        Status OK [Sucesso]
+                      </span>
+                    ) : (
+                      <span className="flex items-center gap-1 font-black shrink-0 uppercase tracking-widest text-[10.5px]">
+                        <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
+                        Erro Interno ou Falha 
+                      </span>
+                    )}
+                  </div>
+                  {!currentResult.ok && currentResult.error && (
+                    <p className="mt-1 text-[10px] leading-snug font-sans">
+                      {currentResult.error}
+                    </p>
                   )}
                 </div>
               )}
