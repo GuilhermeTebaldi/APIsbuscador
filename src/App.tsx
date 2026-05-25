@@ -57,6 +57,7 @@ export default function App() {
   const [apiList, setApiList] = useState<FreeApiInfo[]>([]);
   const [isFallback, setIsFallback] = useState(false);
   const [totalApis, setTotalApis] = useState<number>(55);
+  const [offlineCatalog, setOfflineCatalog] = useState<FreeApiInfo[] | null>(null);
 
   // States per Card
   const [cardQueryParams, setCardQueryParams] = useState<Record<string, Record<string, string>>>({});
@@ -167,16 +168,40 @@ export default function App() {
     initializeParams(apis);
   };
 
-  const applyOfflineFallback = (queryHint = '') => {
+  const loadOfflineCatalog = async (): Promise<FreeApiInfo[]> => {
+    if (offlineCatalog && offlineCatalog.length > 0) {
+      return offlineCatalog;
+    }
+
+    try {
+      const res = await fetch('/apis-catalog.json');
+      const contentType = res.headers.get('content-type') || '';
+      if (!res.ok || !contentType.toLowerCase().includes('application/json')) {
+        throw new Error(`catálogo estático indisponível [${res.status}]`);
+      }
+      const data = await res.json();
+      if (Array.isArray(data) && data.length > 0) {
+        setOfflineCatalog(data);
+        return data;
+      }
+      throw new Error('catálogo estático vazio');
+    } catch (err) {
+      console.warn('[offline-catalog] fallback mínimo ativo:', err);
+      return OFFLINE_DEFAULT_APIS;
+    }
+  };
+
+  const applyOfflineFallback = async (queryHint = '') => {
+    const catalog = await loadOfflineCatalog();
     const trimmed = queryHint.trim().toLowerCase();
     const localList = trimmed
-      ? OFFLINE_DEFAULT_APIS.filter((api) =>
+      ? catalog.filter((api) =>
           api.name.toLowerCase().includes(trimmed) ||
           api.description.toLowerCase().includes(trimmed) ||
           (api.category || '').toLowerCase().includes(trimmed)
         )
-      : OFFLINE_DEFAULT_APIS;
-    const apis = localList.length > 0 ? localList : OFFLINE_DEFAULT_APIS;
+      : catalog;
+    const apis = localList.length > 0 ? localList : catalog;
     const payload = {
       correctedQuery: queryHint || 'Modo Offline',
       explanation: 'Backend indisponível. Exibindo catálogo local embutido no frontend.',
@@ -195,7 +220,7 @@ export default function App() {
       applyApisPayload(data, 'APIs Recomendadas');
     } catch (e) {
       console.error("Falha ao carregar defaults:", e);
-      applyOfflineFallback();
+      await applyOfflineFallback();
     } finally {
       setLoading(false);
     }
@@ -220,7 +245,7 @@ export default function App() {
       applyApisPayload(data, activeTerm);
     } catch (err) {
       console.error("Erro na busca de APIs:", err);
-      applyOfflineFallback(activeTerm);
+      await applyOfflineFallback(activeTerm);
     } finally {
       setLoading(false);
     }
@@ -1853,6 +1878,140 @@ export default function App() {
     }, 2000);
   };
 
+  const baseList = allApis.length > 0 ? allApis : apiList;
+
+  const categoryIndex = useMemo(() => {
+    const subById: Record<string, string> = {};
+    const parentById: Record<string, string> = {};
+    const rawById: Record<string, string> = {};
+    const parentCountMap = new Map<string, number>();
+    const subCountByParent = new Map<string, Map<string, number>>();
+    const rawCountMap = new Map<string, number>();
+    const rawCountByParent = new Map<string, Map<string, number>>();
+
+    for (const api of baseList) {
+      const sub = getApiSubcategory(api);
+      const parent = getApiParentCategory(api);
+      const rawCategory = (api.category || "").trim() || "Sem categoria";
+
+      subById[api.id] = sub;
+      parentById[api.id] = parent;
+      rawById[api.id] = rawCategory;
+
+      parentCountMap.set(parent, (parentCountMap.get(parent) || 0) + 1);
+
+      if (!subCountByParent.has(parent)) {
+        subCountByParent.set(parent, new Map<string, number>());
+      }
+      const subMap = subCountByParent.get(parent)!;
+      subMap.set(sub, (subMap.get(sub) || 0) + 1);
+
+      rawCountMap.set(rawCategory, (rawCountMap.get(rawCategory) || 0) + 1);
+      if (!rawCountByParent.has(parent)) {
+        rawCountByParent.set(parent, new Map<string, number>());
+      }
+      const rawParentMap = rawCountByParent.get(parent)!;
+      rawParentMap.set(rawCategory, (rawParentMap.get(rawCategory) || 0) + 1);
+    }
+
+    const categoryCards = CATEGORIES_MAP
+      .map((cat) => ({
+        name: cat.name,
+        icon: cat.icon,
+        count: parentCountMap.get(cat.name) || 0,
+        subcategories: cat.subcategories
+          .map((sub) => ({
+            name: sub,
+            count: subCountByParent.get(cat.name)?.get(sub) || 0
+          }))
+          .filter((sub) => sub.count > 0)
+      }))
+      .filter((cat) => cat.count > 0);
+
+    const sortByCountDesc = (a: { name: string; count: number }, b: { name: string; count: number }) =>
+      b.count - a.count || a.name.localeCompare(b.name, "pt-BR");
+
+    const rawOptions = Array.from(rawCountMap.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort(sortByCountDesc);
+
+    const rawOptionsByParent: Record<string, { name: string; count: number }[]> = {};
+    for (const [parent, rawMap] of rawCountByParent.entries()) {
+      rawOptionsByParent[parent] = Array.from(rawMap.entries())
+        .map(([name, count]) => ({ name, count }))
+        .sort(sortByCountDesc);
+    }
+
+    return {
+      subById,
+      parentById,
+      rawById,
+      categoryCards,
+      rawOptions,
+      rawOptionsByParent
+    };
+  }, [baseList]);
+
+  const selectedCategorySubOptions = useMemo(() => {
+    if (!selectedCategory) return [];
+    return categoryIndex.categoryCards.find((cat) => cat.name === selectedCategory)?.subcategories || [];
+  }, [selectedCategory, categoryIndex.categoryCards]);
+
+  const activeRawOptionsSource = selectedCategory
+    ? (categoryIndex.rawOptionsByParent[selectedCategory] || [])
+    : categoryIndex.rawOptions;
+
+  const rawCategoryMatches = useMemo(() => {
+    const q = rawCategorySearch.trim().toLowerCase();
+    if (!q) return activeRawOptionsSource;
+    return activeRawOptionsSource.filter((option) => option.name.toLowerCase().includes(q));
+  }, [activeRawOptionsSource, rawCategorySearch]);
+
+  const rawCategoryPreview = rawCategoryMatches.slice(0, 10);
+  const hiddenRawCategoryCount = Math.max(0, rawCategoryMatches.length - rawCategoryPreview.length);
+
+  const filteredApis = useMemo(() => {
+    let list = baseList;
+
+    if (selectedCategory) {
+      list = list.filter((api) => categoryIndex.parentById[api.id] === selectedCategory);
+    }
+
+    if (selectedSubcategory) {
+      list = list.filter((api) => categoryIndex.subById[api.id] === selectedSubcategory);
+    }
+
+    if (selectedRawCategory) {
+      list = list.filter((api) => categoryIndex.rawById[api.id] === selectedRawCategory);
+    }
+
+    if (query.trim()) {
+      const q = query.toLowerCase();
+      list = list.filter((api) =>
+        api.name.toLowerCase().includes(q) ||
+        api.description.toLowerCase().includes(q) ||
+        (categoryIndex.rawById[api.id] || "").toLowerCase().includes(q) ||
+        (categoryIndex.subById[api.id] || "").toLowerCase().includes(q) ||
+        (categoryIndex.parentById[api.id] || "").toLowerCase().includes(q)
+      );
+    }
+
+    if (!query.trim() && !selectedCategory && !selectedSubcategory && !selectedRawCategory) {
+      return list.slice(0, 10);
+    }
+
+    return list;
+  }, [
+    baseList,
+    categoryIndex.parentById,
+    categoryIndex.rawById,
+    categoryIndex.subById,
+    query,
+    selectedCategory,
+    selectedRawCategory,
+    selectedSubcategory
+  ]);
+
   // Render detail view layout when an API is selected
   if (selectedApi) {
     const api = selectedApi;
@@ -2173,140 +2332,6 @@ export default function App() {
       </div>
     );
   }
-
-  const baseList = allApis.length > 0 ? allApis : apiList;
-
-  const categoryIndex = useMemo(() => {
-    const subById: Record<string, string> = {};
-    const parentById: Record<string, string> = {};
-    const rawById: Record<string, string> = {};
-    const parentCountMap = new Map<string, number>();
-    const subCountByParent = new Map<string, Map<string, number>>();
-    const rawCountMap = new Map<string, number>();
-    const rawCountByParent = new Map<string, Map<string, number>>();
-
-    for (const api of baseList) {
-      const sub = getApiSubcategory(api);
-      const parent = getApiParentCategory(api);
-      const rawCategory = (api.category || "").trim() || "Sem categoria";
-
-      subById[api.id] = sub;
-      parentById[api.id] = parent;
-      rawById[api.id] = rawCategory;
-
-      parentCountMap.set(parent, (parentCountMap.get(parent) || 0) + 1);
-
-      if (!subCountByParent.has(parent)) {
-        subCountByParent.set(parent, new Map<string, number>());
-      }
-      const subMap = subCountByParent.get(parent)!;
-      subMap.set(sub, (subMap.get(sub) || 0) + 1);
-
-      rawCountMap.set(rawCategory, (rawCountMap.get(rawCategory) || 0) + 1);
-      if (!rawCountByParent.has(parent)) {
-        rawCountByParent.set(parent, new Map<string, number>());
-      }
-      const rawParentMap = rawCountByParent.get(parent)!;
-      rawParentMap.set(rawCategory, (rawParentMap.get(rawCategory) || 0) + 1);
-    }
-
-    const categoryCards = CATEGORIES_MAP
-      .map((cat) => ({
-        name: cat.name,
-        icon: cat.icon,
-        count: parentCountMap.get(cat.name) || 0,
-        subcategories: cat.subcategories
-          .map((sub) => ({
-            name: sub,
-            count: subCountByParent.get(cat.name)?.get(sub) || 0
-          }))
-          .filter((sub) => sub.count > 0)
-      }))
-      .filter((cat) => cat.count > 0);
-
-    const sortByCountDesc = (a: { name: string; count: number }, b: { name: string; count: number }) =>
-      b.count - a.count || a.name.localeCompare(b.name, "pt-BR");
-
-    const rawOptions = Array.from(rawCountMap.entries())
-      .map(([name, count]) => ({ name, count }))
-      .sort(sortByCountDesc);
-
-    const rawOptionsByParent: Record<string, { name: string; count: number }[]> = {};
-    for (const [parent, rawMap] of rawCountByParent.entries()) {
-      rawOptionsByParent[parent] = Array.from(rawMap.entries())
-        .map(([name, count]) => ({ name, count }))
-        .sort(sortByCountDesc);
-    }
-
-    return {
-      subById,
-      parentById,
-      rawById,
-      categoryCards,
-      rawOptions,
-      rawOptionsByParent
-    };
-  }, [baseList]);
-
-  const selectedCategorySubOptions = useMemo(() => {
-    if (!selectedCategory) return [];
-    return categoryIndex.categoryCards.find((cat) => cat.name === selectedCategory)?.subcategories || [];
-  }, [selectedCategory, categoryIndex.categoryCards]);
-
-  const activeRawOptionsSource = selectedCategory
-    ? (categoryIndex.rawOptionsByParent[selectedCategory] || [])
-    : categoryIndex.rawOptions;
-
-  const rawCategoryMatches = useMemo(() => {
-    const q = rawCategorySearch.trim().toLowerCase();
-    if (!q) return activeRawOptionsSource;
-    return activeRawOptionsSource.filter((option) => option.name.toLowerCase().includes(q));
-  }, [activeRawOptionsSource, rawCategorySearch]);
-
-  const rawCategoryPreview = rawCategoryMatches.slice(0, 10);
-  const hiddenRawCategoryCount = Math.max(0, rawCategoryMatches.length - rawCategoryPreview.length);
-
-  const filteredApis = useMemo(() => {
-    let list = baseList;
-
-    if (selectedCategory) {
-      list = list.filter((api) => categoryIndex.parentById[api.id] === selectedCategory);
-    }
-
-    if (selectedSubcategory) {
-      list = list.filter((api) => categoryIndex.subById[api.id] === selectedSubcategory);
-    }
-
-    if (selectedRawCategory) {
-      list = list.filter((api) => categoryIndex.rawById[api.id] === selectedRawCategory);
-    }
-
-    if (query.trim()) {
-      const q = query.toLowerCase();
-      list = list.filter((api) =>
-        api.name.toLowerCase().includes(q) ||
-        api.description.toLowerCase().includes(q) ||
-        (categoryIndex.rawById[api.id] || "").toLowerCase().includes(q) ||
-        (categoryIndex.subById[api.id] || "").toLowerCase().includes(q) ||
-        (categoryIndex.parentById[api.id] || "").toLowerCase().includes(q)
-      );
-    }
-
-    if (!query.trim() && !selectedCategory && !selectedSubcategory && !selectedRawCategory) {
-      return list.slice(0, 10);
-    }
-
-    return list;
-  }, [
-    baseList,
-    categoryIndex.parentById,
-    categoryIndex.rawById,
-    categoryIndex.subById,
-    query,
-    selectedCategory,
-    selectedRawCategory,
-    selectedSubcategory
-  ]);
 
   // --- CATALOGO COMUM (WHITE LAYOUT DIRECTORY VIEW) ---
   return (
