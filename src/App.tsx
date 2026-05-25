@@ -47,6 +47,9 @@ const CATEGORIES_MAP = [
   }
 ];
 
+const INITIAL_VISIBLE_APIS = 24;
+const LOAD_MORE_APIS_STEP = 24;
+
 export default function App() {
   // Query States
   const [query, setQuery] = useState('');
@@ -81,6 +84,7 @@ export default function App() {
   const [selectedSubcategory, setSelectedSubcategory] = useState<string>('');
   const [selectedRawCategory, setSelectedRawCategory] = useState<string>('');
   const [rawCategorySearch, setRawCategorySearch] = useState<string>('');
+  const [visibleApiLimit, setVisibleApiLimit] = useState<number>(INITIAL_VISIBLE_APIS);
 
   // Categorização Determinística de APIs com base em dados reais do Pirate Index
   const getApiSubcategory = (api: FreeApiInfo): string => {
@@ -170,7 +174,6 @@ export default function App() {
     } else {
       setTotalApis(apis.length);
     }
-    initializeParams(apis);
   };
 
   const loadOfflineCatalog = async (): Promise<FreeApiInfo[]> => {
@@ -312,30 +315,33 @@ export default function App() {
     }
   };
 
-  // Pre-fill query parameters & path parameters state for each API
-  const initializeParams = (apis: FreeApiInfo[]) => {
-    const qParams: Record<string, Record<string, string>> = {};
-    const pParams: Record<string, Record<string, string>> = {};
+  // Initialize query/path params only when a specific API card is opened.
+  const initializeApiParams = (api: FreeApiInfo) => {
+    const ep = api.endpoints?.[0];
+    if (!ep) return;
 
-    apis.forEach(api => {
-      const ep = api.endpoints?.[0];
-      if (ep) {
-        const q: Record<string, string> = {};
-        ep.queryParams?.forEach(p => {
-          q[p.name] = p.defaultValue || '';
-        });
-        qParams[api.id] = q;
-
-        const p: Record<string, string> = {};
-        ep.pathParams?.forEach(param => {
-          p[param.name] = param.defaultValue || '';
-        });
-        pParams[api.id] = p;
-      }
+    setCardQueryParams((prev) => {
+      if (prev[api.id]) return prev;
+      const q: Record<string, string> = {};
+      ep.queryParams?.forEach((param) => {
+        q[param.name] = param.defaultValue || '';
+      });
+      return { ...prev, [api.id]: q };
     });
 
-    setCardQueryParams(prev => ({ ...prev, ...qParams }));
-    setCardPathParams(prev => ({ ...prev, ...pParams }));
+    setCardPathParams((prev) => {
+      if (prev[api.id]) return prev;
+      const p: Record<string, string> = {};
+      ep.pathParams?.forEach((param) => {
+        p[param.name] = param.defaultValue || '';
+      });
+      return { ...prev, [api.id]: p };
+    });
+  };
+
+  const openApiDetails = (api: FreeApiInfo) => {
+    initializeApiParams(api);
+    setSelectedApi(api);
   };
 
   // Run live proxy call
@@ -2047,10 +2053,6 @@ export default function App() {
       );
     }
 
-    if (!query.trim() && !selectedCategory && !selectedSubcategory && !selectedRawCategory) {
-      return list.slice(0, 10);
-    }
-
     return list;
   }, [
     baseList,
@@ -2062,6 +2064,17 @@ export default function App() {
     selectedRawCategory,
     selectedSubcategory
   ]);
+
+  useEffect(() => {
+    setVisibleApiLimit(INITIAL_VISIBLE_APIS);
+  }, [query, selectedCategory, selectedSubcategory, selectedRawCategory, baseList.length]);
+
+  const visibleApis = useMemo(
+    () => filteredApis.slice(0, visibleApiLimit),
+    [filteredApis, visibleApiLimit]
+  );
+
+  const hasMoreVisibleApis = visibleApiLimit < filteredApis.length;
 
   // Render detail view layout when an API is selected
   if (selectedApi) {
@@ -2777,13 +2790,23 @@ export default function App() {
             </button>
           </div>
         ) : (
-          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 pb-24">
-            {filteredApis.map((api) => {
+          <>
+          <div className="mb-4 text-xs font-mono text-slate-500 flex items-center justify-between gap-2">
+            <span>
+              Exibindo <strong className="text-slate-700">{visibleApis.length}</strong> de{" "}
+              <strong className="text-slate-700">{filteredApis.length}</strong> APIs
+            </span>
+            {hasMoreVisibleApis && (
+              <span className="text-[11px] text-slate-400">Carregamento progressivo ativo</span>
+            )}
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 pb-10">
+            {visibleApis.map((api) => {
               return (
                 <div
                   id={`api-card-${api.id}`}
                   key={api.id}
-                  onClick={() => setSelectedApi(api)}
+                  onClick={() => openApiDetails(api)}
                   className="bg-white/95 hover:bg-slate-50/75 backdrop-blur-xs border border-slate-200 hover:border-indigo-305 p-5 rounded-2xl flex flex-col justify-between transition-all duration-200 cursor-pointer shadow-xs hover:shadow-md relative overflow-hidden group hover:scale-[1.01]"
                 >
                   <div className="space-y-4">
@@ -2811,16 +2834,13 @@ export default function App() {
                       </p>
                     </div>
 
-                    {/* Compact endpoint summary badges showing what is inside each API */}
-                    <div className="space-y-1 pt-1 border-t border-slate-100">
-                      <span className="text-[9px] uppercase tracking-wider font-mono text-slate-400 font-bold block">Fórmula de Retorno</span>
-                      <div className="flex flex-wrap gap-1">
-                        {api.endpoints?.map((ep, idx) => (
-                          <span key={idx} className="bg-slate-50 text-slate-700 font-mono text-[9.5px] px-1.5 py-0.5 rounded border border-slate-150 inline-block font-medium truncate max-w-full">
-                            <strong className="text-indigo-600 font-bold">{ep.method}</strong> {ep.path}
-                          </span>
-                        ))}
-                      </div>
+                    <div className="pt-1 border-t border-slate-100">
+                      <span className="text-[9px] uppercase tracking-wider font-mono text-slate-400 font-bold block">
+                        Rotas Disponíveis
+                      </span>
+                      <p className="text-[11px] text-slate-600 font-semibold">
+                        {api.endpoints?.length || 0} rota(s) cadastrada(s)
+                      </p>
                     </div>
 
                     <div className="space-y-0.5">
@@ -2846,6 +2866,18 @@ export default function App() {
               );
             })}
           </div>
+          {hasMoreVisibleApis && (
+            <div className="pb-24 flex justify-center">
+              <button
+                type="button"
+                onClick={() => setVisibleApiLimit((prev) => prev + LOAD_MORE_APIS_STEP)}
+                className="bg-white border border-slate-250 hover:border-indigo-300 hover:bg-indigo-50 text-slate-700 hover:text-indigo-700 font-bold text-xs px-4 py-2 rounded-xl transition cursor-pointer"
+              >
+                Carregar mais {Math.min(LOAD_MORE_APIS_STEP, filteredApis.length - visibleApis.length)} APIs
+              </button>
+            </div>
+          )}
+          </>
         )}
       </main>
 
