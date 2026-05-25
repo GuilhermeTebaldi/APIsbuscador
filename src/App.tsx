@@ -7,6 +7,7 @@ import {
 } from 'lucide-react';
 import { FreeApiInfo, QueryParamInfo, PathParamInfo, EndpointInfo } from './types';
 import { getPresetsForApi, CommandPreset } from './utils/presets';
+import { OFFLINE_DEFAULT_APIS } from './data/offlineDefaults';
 
 // Helper to stringify JSON nicely
 const formatJson = (data: any): string => {
@@ -138,22 +139,59 @@ export default function App() {
     fetchInitialApis();
   }, []);
 
+  const parseJsonResponse = async (res: Response) => {
+    const contentType = res.headers.get('content-type') || '';
+    if (!contentType.toLowerCase().includes('application/json')) {
+      const text = await res.text();
+      throw new Error(`Resposta não-JSON em ${res.url || 'endpoint'} [${res.status}]: ${text.slice(0, 120)}`);
+    }
+    return res.json();
+  };
+
+  const applyApisPayload = (data: any, fallbackTitle = 'APIs Recomendadas') => {
+    const apis = Array.isArray(data?.apis) ? data.apis : [];
+    setAllApis(apis);
+    setApiList(apis);
+    setExplanation(data?.explanation || '');
+    setCorrectedQuery(data?.correctedQuery || fallbackTitle);
+    setIsFallback(!!data?.isFallback);
+    if (data?.totalSystemApis) {
+      setTotalApis(data.totalSystemApis);
+    } else {
+      setTotalApis(apis.length);
+    }
+    initializeParams(apis);
+  };
+
+  const applyOfflineFallback = (queryHint = '') => {
+    const trimmed = queryHint.trim().toLowerCase();
+    const localList = trimmed
+      ? OFFLINE_DEFAULT_APIS.filter((api) =>
+          api.name.toLowerCase().includes(trimmed) ||
+          api.description.toLowerCase().includes(trimmed) ||
+          (api.category || '').toLowerCase().includes(trimmed)
+        )
+      : OFFLINE_DEFAULT_APIS;
+    const apis = localList.length > 0 ? localList : OFFLINE_DEFAULT_APIS;
+    const payload = {
+      correctedQuery: queryHint || 'Modo Offline',
+      explanation: 'Backend indisponível. Exibindo catálogo local embutido no frontend.',
+      apis,
+      isFallback: true,
+      totalSystemApis: apis.length
+    };
+    applyApisPayload(payload, 'Modo Offline');
+  };
+
   const fetchInitialApis = async () => {
     setLoading(true);
     try {
       const res = await fetch('/api/defaults');
-      const data = await res.json();
-      setAllApis(data.apis || []);
-      setApiList(data.apis || []);
-      setExplanation(data.explanation || '');
-      setCorrectedQuery(data.correctedQuery || 'APIs Recomendadas');
-      setIsFallback(!!data.isFallback);
-      if (data.totalSystemApis) {
-        setTotalApis(data.totalSystemApis);
-      }
-      initializeParams(data.apis || []);
+      const data = await parseJsonResponse(res);
+      applyApisPayload(data, 'APIs Recomendadas');
     } catch (e) {
       console.error("Falha ao carregar defaults:", e);
+      applyOfflineFallback();
     } finally {
       setLoading(false);
     }
@@ -174,14 +212,11 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ query: activeTerm })
       });
-      const data = await res.json();
-      setApiList(data.apis || []);
-      setExplanation(data.explanation || '');
-      setCorrectedQuery(data.correctedQuery || activeTerm);
-      setIsFallback(!!data.isFallback);
-      initializeParams(data.apis || []);
+      const data = await parseJsonResponse(res);
+      applyApisPayload(data, activeTerm);
     } catch (err) {
       console.error("Erro na busca de APIs:", err);
+      applyOfflineFallback(activeTerm);
     } finally {
       setLoading(false);
     }

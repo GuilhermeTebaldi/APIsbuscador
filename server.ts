@@ -1588,28 +1588,50 @@ Retorne em formato estritamente estruturado JSON.`;
   }
 }
 
-// --- DYNAMIC DATABASE FILE-BASED CONFIGURATION ---
-const DYNAMIC_APIS_PATH = path.join(process.cwd(), "collected_apis.json");
+// --- DYNAMIC STORAGE (LOCAL FILE IN SECRET FOLDER) ---
+const SECRET_STORE_DIR = path.join(process.cwd(), ".site-secret");
+const DYNAMIC_APIS_PATH = path.join(SECRET_STORE_DIR, "collected_apis.json");
+const LEGACY_DYNAMIC_APIS_PATH = path.join(process.cwd(), "collected_apis.json");
 let DYNAMIC_APIs: any[] = [];
+
+function ensureSecretStore() {
+  if (!fs.existsSync(SECRET_STORE_DIR)) {
+    fs.mkdirSync(SECRET_STORE_DIR, { recursive: true });
+  }
+}
+
+function migrateLegacyStoreIfNeeded() {
+  try {
+    ensureSecretStore();
+    if (!fs.existsSync(DYNAMIC_APIS_PATH) && fs.existsSync(LEGACY_DYNAMIC_APIS_PATH)) {
+      fs.copyFileSync(LEGACY_DYNAMIC_APIS_PATH, DYNAMIC_APIS_PATH);
+      console.log(`[Storage] Migração concluída para pasta secreta: ${DYNAMIC_APIS_PATH}`);
+    }
+  } catch (err) {
+    console.error("[Storage] Erro ao migrar store legado:", err);
+  }
+}
 
 function loadDynamicApis() {
   try {
+    migrateLegacyStoreIfNeeded();
     if (fs.existsSync(DYNAMIC_APIS_PATH)) {
       const content = fs.readFileSync(DYNAMIC_APIS_PATH, "utf-8");
       DYNAMIC_APIs = JSON.parse(content);
-      console.log(`[Database] Carregadas ${DYNAMIC_APIs.length} APIs coletadas do banco de dados local.`);
+      console.log(`[Storage] Carregadas ${DYNAMIC_APIs.length} APIs da pasta secreta local.`);
     }
   } catch (err) {
-    console.error("[Database] Erro ao carregar APIs do banco de dados:", err);
+    console.error("[Storage] Erro ao carregar APIs da pasta secreta:", err);
   }
 }
 
 function saveDynamicApis() {
   try {
+    ensureSecretStore();
     fs.writeFileSync(DYNAMIC_APIS_PATH, JSON.stringify(DYNAMIC_APIs, null, 2), "utf-8");
-    console.log(`[Database] Banco de dados de APIs atualizado no arquivo JSON.`);
+    console.log(`[Storage] Catálogo local atualizado em ${DYNAMIC_APIS_PATH}.`);
   } catch (err) {
-    console.error("[Database] Erro ao gravar APIs no arquivo JSON:", err);
+    console.error("[Storage] Erro ao gravar APIs na pasta secreta:", err);
   }
 }
 
