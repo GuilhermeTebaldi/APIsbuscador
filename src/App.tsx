@@ -82,6 +82,10 @@ export default function App() {
 
   // Categorização Determinística de APIs com base em dados reais do Pirate Index
   const getApiSubcategory = (api: FreeApiInfo): string => {
+    if (api.subcategory && api.subcategory.trim()) {
+      return api.subcategory.trim();
+    }
+
     const name = api.name.toLowerCase();
     const desc = api.description.toLowerCase();
     const cat = (api.category || "").toLowerCase();

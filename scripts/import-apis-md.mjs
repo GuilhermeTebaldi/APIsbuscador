@@ -1,0 +1,304 @@
+import fs from "fs";
+import path from "path";
+import crypto from "crypto";
+
+const ROOT = process.cwd();
+const APIS_MD_PATH = path.join(ROOT, "apis.md");
+const SECRET_DIR = path.join(ROOT, ".site-secret");
+const OUTPUT_JSON = path.join(SECRET_DIR, "collected_apis.json");
+
+const HEADER_RE = /^nome\s*\t\s*api direta\s*\t\s*fun[cç][aã]o/i;
+const URL_RE = /^https?:\/\/\S+/i;
+
+function isUrl(value = "") {
+  return URL_RE.test(value.trim());
+}
+
+function cleanText(value = "") {
+  return value
+    .replace(/^\uFEFF/, "")
+    .replace(/✅/g, "")
+    .replace(/~~/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function normalizeUrl(value = "") {
+  const raw = value.trim();
+  try {
+    const u = new URL(raw);
+    const host = u.hostname.toLowerCase();
+    const pathname = u.pathname.replace(/\/+$/, "") || "/";
+    return `${u.protocol}//${host}${pathname}${u.search}`;
+  } catch {
+    return raw.toLowerCase();
+  }
+}
+
+function slugify(value = "") {
+  const base = value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "");
+  return base || "api";
+}
+
+function pickCategory(name, func, url) {
+  const t = `${name} ${func} ${url}`.toLowerCase();
+
+  const rules = [
+    { c: "IA & LLM", s: "Modelos e Chat", k: ["llm", "chat", "openai", "anthropic", "mistral", "deepseek", "groq", "openrouter", "prompt", "embeddings"] },
+    { c: "IA & LLM", s: "Voz e Áudio", k: ["speech", "voice", "transcript", "elevenlabs", "deepgram", "assemblyai", "audio"] },
+    { c: "IA & LLM", s: "Imagem e Multimodal", k: ["image", "stable", "replicate", "fal.ai", "civitai", "ocr", "removebg"] },
+    { c: "Blockchain & Crypto", s: "Mercado e Tokens", k: ["crypto", "bitcoin", "coin", "token", "defi", "etherscan", "solana", "nft", "opensea", "blockchain"] },
+    { c: "Segurança", s: "Threat Intelligence", k: ["threat", "cve", "vulnerability", "malware", "phish", "otx", "greynoise", "abuse", "leak", "security"] },
+    { c: "Segurança", s: "Reconhecimento e Infra", k: ["shodan", "censys", "fofa", "zoomeye", "dns", "crt.sh", "internetdb", "assets", "subdomain"] },
+    { c: "Dados & Pesquisa", s: "Científico", k: ["paper", "openalex", "semantic", "crossref", "openaire", "dataset", "kaggle", "zenodo", "dryad"] },
+    { c: "Dados & Pesquisa", s: "Knowledge Graph", k: ["wikidata", "dbpedia", "sparql", "knowledge graph"] },
+    { c: "Clima & Geografia", s: "Meteorologia", k: ["weather", "meteo", "clima", "flood", "air pollution", "aqi", "earthquake", "usgs", "openaq"] },
+    { c: "Clima & Geografia", s: "Mapas e Geodados", k: ["map", "geo", "geography", "nominatim", "openstreetmap", "countries", "ibge", "brasilapi"] },
+    { c: "Transporte & Mobilidade", s: "Aéreo e Marítimo", k: ["flight", "air", "aviation", "adsb", "opensky", "ais", "navio"] },
+    { c: "Transporte & Mobilidade", s: "Trânsito e Público", k: ["transit", "bus", "train", "mbta", "wmata", "traffic", "bike"] },
+    { c: "Observabilidade & DevOps", s: "Logs e Erros", k: ["observability", "logs", "sentry", "uptime", "glitchtip", "analytics", "monitor"] },
+    { c: "Automação & Plataforma", s: "Workflow e Integração", k: ["workflow", "pipeline", "orquestra", "airbyte", "prefect", "dagster", "temporal", "kestra"] },
+    { c: "Comunicação", s: "Email e Notificações", k: ["email", "mail", "notify", "notification", "push", "chatwoot", "novu"] },
+    { c: "Mídia & Conteúdo", s: "Imagens, Áudio e Vídeo", k: ["gif", "emoji", "fanart", "radio", "sound", "openverse", "smithsonian", "europeana"] },
+    { c: "Games & Entretenimento", s: "Jogos e Cultura Pop", k: ["pokemon", "anime", "game", "steam", "fortnite", "valorant", "rick", "star wars", "disney", "marvel"] },
+    { c: "Finanças & Economia", s: "Mercado e Câmbio", k: ["currency", "forex", "metal", "fuel", "economia", "câmbio", "gold"] },
+    { c: "Utilidades", s: "Dados Gerais", k: ["random", "quote", "joke", "fake", "placeholder", "advice", "activity", "public api"] }
+  ];
+
+  for (const rule of rules) {
+    if (rule.k.some((token) => t.includes(token))) {
+      return { category: rule.c, subcategory: rule.s };
+    }
+  }
+
+  return { category: "Utilidades", subcategory: "Geral" };
+}
+
+function guessAuth(name, func, url) {
+  const t = `${name} ${func} ${url}`.toLowerCase();
+  if (url.includes("localhost") || url.includes(".example")) return "other";
+  if (
+    t.includes("openai") ||
+    t.includes("anthropic") ||
+    t.includes("groq") ||
+    t.includes("mistral") ||
+    t.includes("deepseek") ||
+    t.includes("firecrawl") ||
+    t.includes("tavily") ||
+    t.includes("exa") ||
+    t.includes("api key") ||
+    t.includes("token")
+  ) {
+    return "apiKey";
+  }
+  return "none";
+}
+
+function toEndpoint(url, name) {
+  try {
+    const u = new URL(url);
+    const endpointPath = `${u.pathname || ""}${u.search || ""}` || "/";
+    return {
+      path: endpointPath,
+      method: "GET",
+      description: `Endpoint principal da API ${name}.`
+    };
+  } catch {
+    return {
+      path: "",
+      method: "GET",
+      description: `Endpoint principal da API ${name}.`
+    };
+  }
+}
+
+function baseUrlOf(url) {
+  try {
+    const u = new URL(url);
+    return `${u.protocol}//${u.host}`;
+  } catch {
+    return url;
+  }
+}
+
+function parseEntriesFromMd(mdText) {
+  const lines = mdText.split(/\r?\n/);
+  const parsed = [];
+  let candidateName = "";
+  let candidateHint = "";
+
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const line = cleanText(raw);
+    if (!line) continue;
+    if (HEADER_RE.test(line)) continue;
+
+    const cols = raw.split("\t");
+
+    // Padrão principal: Nome<TAB>URL<TAB>Função
+    if (cols.length >= 3) {
+      const c0 = cleanText(cols[0] || "");
+      const c1 = cleanText(cols[1] || "");
+      const c2 = cleanText(cols[2] || "");
+
+      if (isUrl(c1)) {
+        if (c0 && c0.toLowerCase() !== "nome") {
+          parsed.push({ name: c0, url: c1, func: c2 || "API pública", source: "tab" });
+          candidateName = "";
+          candidateHint = "";
+          continue;
+        }
+      }
+
+      // Padrão com status: ✅ <TAB> Nome <TAB> URL <TAB> Função
+      if (cols.length >= 4) {
+        const cStatus = cleanText(cols[0] || "");
+        const cName = cleanText(cols[1] || "");
+        const cUrl = cleanText(cols[2] || "");
+        const cFunc = cleanText(cols[3] || "");
+        if ((cStatus.includes("✅") || cStatus.toLowerCase() === "ok") && isUrl(cUrl)) {
+          parsed.push({ name: cName, url: cUrl, func: cFunc || "API pública", source: "tab-status" });
+          candidateName = "";
+          candidateHint = "";
+          continue;
+        }
+      }
+    }
+
+    // Padrão complementar: linhas separadas (Nome / Correto / URL)
+    if (isUrl(line)) {
+      const fallbackName = candidateName || `API ${new URL(line).hostname}`;
+      const fallbackFunc = candidateHint || "Validada manualmente";
+      parsed.push({ name: fallbackName, url: line, func: fallbackFunc, source: "standalone" });
+      candidateName = "";
+      candidateHint = "";
+      continue;
+    }
+
+    const lower = line.toLowerCase();
+    const isNoise =
+      lower === "correto" ||
+      line === "⸻" ||
+      lower.startsWith("estas abaixo") ||
+      lower.startsWith("essas não") ||
+      lower.startsWith("são:") ||
+      lower.startsWith("como identificar") ||
+      lower.startsWith("melhor prática") ||
+      lower.startsWith("dados") ||
+      lower.startsWith("ia") ||
+      lower.startsWith("anime") ||
+      lower.startsWith("livros") ||
+      lower.startsWith("geografia") ||
+      lower.startsWith("qualidade do ar") ||
+      lower.startsWith("api") ||
+      lower.startsWith("serviço");
+
+    if (isNoise) {
+      if (lower === "correto") {
+        candidateHint = "Validada manualmente";
+      }
+      continue;
+    }
+
+    // Guarda nome candidato para caso a URL venha na linha seguinte
+    if (!line.includes("http")) {
+      candidateName = line;
+    }
+  }
+
+  // Deduplicação por URL normalizada
+  const seen = new Set();
+  const deduped = [];
+  for (const p of parsed) {
+    const key = normalizeUrl(p.url);
+    if (!seen.has(key)) {
+      seen.add(key);
+      deduped.push(p);
+    }
+  }
+
+  return deduped;
+}
+
+function buildCatalog(entries) {
+  const result = [];
+  const usedIds = new Set();
+
+  for (const item of entries) {
+    const name = cleanText(item.name);
+    const func = cleanText(item.func || "API pública");
+    const url = cleanText(item.url);
+    if (!name || !isUrl(url)) continue;
+
+    const { category, subcategory } = pickCategory(name, func, url);
+    const auth = guessAuth(name, func, url);
+    const idSeed = slugify(name);
+    const urlHash = crypto.createHash("md5").update(normalizeUrl(url)).digest("hex").slice(0, 6);
+    let id = `${idSeed}-${urlHash}`;
+    while (usedIds.has(id)) {
+      id = `${id}-${Math.floor(Math.random() * 10)}`;
+    }
+    usedIds.add(id);
+
+    result.push({
+      id,
+      name,
+      description: `${func}.`,
+      category,
+      subcategory,
+      url: baseUrlOf(url),
+      docsUrl: url,
+      endpoints: [toEndpoint(url, name)],
+      auth,
+      sampleResponse: {
+        source: "apis.md",
+        endpoint: url,
+        note: "Resposta real varia conforme autenticação e parâmetros."
+      }
+    });
+  }
+
+  return result;
+}
+
+function rewriteApisMd(catalog) {
+  const lines = [];
+  lines.push("Legenda:");
+  lines.push("✅ = importada para o sistema");
+  lines.push("Status\tNome\tAPI direta\tFunção\tCategoria\tSubcategoria");
+
+  for (const api of catalog) {
+    const endpoint = api.docsUrl;
+    const func = api.description.replace(/\.$/, "");
+    lines.push(`✅\t~~${api.name}~~\t${endpoint}\t${func}\t${api.category}\t${api.subcategory}`);
+  }
+
+  lines.push("");
+  lines.push(`Total importado: ${catalog.length} APIs`);
+  fs.writeFileSync(APIS_MD_PATH, `${lines.join("\n")}\n`, "utf-8");
+}
+
+function main() {
+  if (!fs.existsSync(APIS_MD_PATH)) {
+    throw new Error(`Arquivo não encontrado: ${APIS_MD_PATH}`);
+  }
+
+  const md = fs.readFileSync(APIS_MD_PATH, "utf-8");
+  const entries = parseEntriesFromMd(md);
+  const catalog = buildCatalog(entries);
+
+  fs.mkdirSync(SECRET_DIR, { recursive: true });
+  fs.writeFileSync(OUTPUT_JSON, JSON.stringify(catalog, null, 2), "utf-8");
+  rewriteApisMd(catalog);
+
+  console.log(`[import-apis-md] entradas lidas: ${entries.length}`);
+  console.log(`[import-apis-md] catálogo salvo: ${catalog.length} APIs -> ${OUTPUT_JSON}`);
+  console.log(`[import-apis-md] apis.md atualizado com status ✅ e nome riscado.`);
+}
+
+main();

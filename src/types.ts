@@ -32,6 +32,7 @@ export interface FreeApiInfo {
   name: string;
   description: string;
   category: string;
+  subcategory?: string;
   url: string; // Base URL
   docsUrl: string; // GitHub or docs link
   endpoints: EndpointInfo[];
