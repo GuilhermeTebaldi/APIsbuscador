@@ -1,0 +1,6 @@
+{
+  "name": "Buscador de APIs Gratuitas",
+  "description": "Busque, inspecione e teste APIs gratuitas da internet com inteligência de busca e testes interativos em tempo real.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
