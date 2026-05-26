@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useMemo } from 'react';
+import { createPortal } from 'react-dom';
 import { 
   Search, Sparkles, Loader2, Layers, Zap, Key, FileText, 
   ExternalLink, RefreshCw, Check, Globe, AlertTriangle, 
@@ -164,7 +165,6 @@ export default function App() {
   const [allApis, setAllApis] = useState<FreeApiInfo[]>([]);
   const [apiList, setApiList] = useState<FreeApiInfo[]>([]);
   const [isFallback, setIsFallback] = useState(false);
-  const [totalApis, setTotalApis] = useState<number>(55);
   const [offlineCatalog, setOfflineCatalog] = useState<FreeApiInfo[] | null>(null);
 
   // States per Card
@@ -172,6 +172,7 @@ export default function App() {
   const [cardPathParams, setCardPathParams] = useState<Record<string, Record<string, string>>>({});
   const [cardResults, setCardResults] = useState<Record<string, any>>({});
   const [cardLoading, setCardLoading] = useState<Record<string, boolean>>({});
+  const [apiMethodOverrides, setApiMethodOverrides] = useState<Record<string, string>>({});
 
   // Navigation Detail & Clipboard copy state
   const [selectedApi, setSelectedApi] = useState<FreeApiInfo | null>(null);
@@ -189,6 +190,8 @@ export default function App() {
   const [selectedRawCategory, setSelectedRawCategory] = useState<string>('');
   const [rawCategorySearch, setRawCategorySearch] = useState<string>('');
   const [visibleApiLimit, setVisibleApiLimit] = useState<number>(INITIAL_VISIBLE_APIS);
+  const [isFilterPanelOpen, setIsFilterPanelOpen] = useState(false);
+  const [isDirectoryVisible, setIsDirectoryVisible] = useState(false);
 
   // Categorização Determinística de APIs com base em dados reais do Pirate Index
   const getApiSubcategory = (api: FreeApiInfo): string => {
@@ -252,11 +255,6 @@ export default function App() {
     { label: "Bíblia Eletrônica", term: "versiculo biblia" }
   ];
 
-  // Fetch initial popular APIs
-  useEffect(() => {
-    fetchInitialApis();
-  }, []);
-
   const parseJsonResponse = async (res: Response) => {
     const contentType = res.headers.get('content-type') || '';
     if (!contentType.toLowerCase().includes('application/json')) {
@@ -266,6 +264,54 @@ export default function App() {
     return res.json();
   };
 
+  const resolveInitialSampleData = (sample: any) => {
+    if (
+      sample &&
+      typeof sample === 'object' &&
+      sample.source === 'apis.md' &&
+      typeof sample.endpoint === 'string'
+    ) {
+      return null;
+    }
+    return sample ?? null;
+  };
+
+  const safePreviewText = (data: any): string => {
+    if (typeof data === 'string') return data;
+    try {
+      return JSON.stringify(data);
+    } catch {
+      return String(data ?? '');
+    }
+  };
+
+  const explainFailureStatus = (status?: number, data?: any, statusText?: string): string => {
+    const bodyText = safePreviewText(data).toLowerCase();
+
+    if (status === 401 || bodyText.includes('no authorization header')) {
+      return 'Autenticação necessária: esta API exige token/chave no header Authorization.';
+    }
+    if (status === 403) {
+      if (bodyText.includes('cloudflare') || bodyText.includes('litespeed') || bodyText.includes('forbidden')) {
+        return 'Acesso negado pelo provedor (firewall/anti-bot/permissão).';
+      }
+      return 'Acesso negado (HTTP 403) para este endpoint.';
+    }
+    if (status === 404) {
+      return 'Endpoint não encontrado (HTTP 404). Verifique a rota e parâmetros.';
+    }
+    if (status === 429) {
+      return 'Limite de requisições atingido (HTTP 429). Tente novamente em alguns segundos.';
+    }
+    if (typeof status === 'number' && status >= 500) {
+      return `Falha no servidor remoto (HTTP ${status}).`;
+    }
+    if (typeof status === 'number' && status >= 400) {
+      return `Requisição recusada (HTTP ${status}${statusText ? ` ${statusText}` : ''}).`;
+    }
+    return 'Falha na conexão com a API.';
+  };
+
   const applyApisPayload = (data: any, fallbackTitle = 'APIs Recomendadas') => {
     const apis = Array.isArray(data?.apis) ? data.apis : [];
     setAllApis(apis);
@@ -273,11 +319,6 @@ export default function App() {
     setExplanation(data?.explanation || '');
     setCorrectedQuery(data?.correctedQuery || fallbackTitle);
     setIsFallback(!!data?.isFallback);
-    if (data?.totalSystemApis) {
-      setTotalApis(data.totalSystemApis);
-    } else {
-      setTotalApis(apis.length);
-    }
   };
 
   const loadOfflineCatalog = async (): Promise<FreeApiInfo[]> => {
@@ -339,12 +380,29 @@ export default function App() {
     }
   };
 
+  const preloadCatalogQuietly = async () => {
+    try {
+      const res = await fetch('/api/defaults');
+      const data = await parseJsonResponse(res);
+      applyApisPayload(data, 'Catálogo');
+    } catch {
+      const catalog = await loadOfflineCatalog();
+      setAllApis(catalog);
+      setApiList(catalog);
+    }
+  };
+
   const handleSearch = async (e?: React.FormEvent, directTerm?: string) => {
     if (e) e.preventDefault();
     const activeTerm = directTerm !== undefined ? directTerm : query;
     if (!activeTerm.trim()) {
-      fetchInitialApis();
+      setIsDirectoryVisible(false);
       return;
+    }
+
+    setIsDirectoryVisible(true);
+    if (directTerm !== undefined) {
+      setQuery(directTerm);
     }
 
     setLoading(true);
@@ -364,6 +422,20 @@ export default function App() {
     }
   };
 
+  const handleShowAllApis = async () => {
+    setSelectedCategory('');
+    setSelectedSubcategory('');
+    setSelectedRawCategory('');
+    setRawCategorySearch('');
+    setQuery('');
+    setIsDirectoryVisible(true);
+    if (allApis.length > 0) {
+      setApiList(allApis);
+      return;
+    }
+    await fetchInitialApis();
+  };
+
   const handleCollectApi = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!customApiUrl.trim()) return;
@@ -381,9 +453,61 @@ export default function App() {
       
       if (data.ok) {
         setCollectStatus({ success: true, message: data.message });
+        const submittedUrl = customApiUrl.trim();
         setCustomApiUrl('');
-        // Refresh catalog to make the newly cataloged API immediately discoverable
-        fetchInitialApis();
+        setIsDirectoryVisible(true);
+        setShowCollector(false);
+
+        if (data.api) {
+          const collectedApi = data.api as FreeApiInfo;
+          setAllApis((prev) => {
+            const withoutDup = prev.filter((item) => item.id !== collectedApi.id);
+            return [collectedApi, ...withoutDup];
+          });
+          setApiList((prev) => {
+            const withoutDup = prev.filter((item) => item.id !== collectedApi.id);
+            return [collectedApi, ...withoutDup];
+          });
+          openApiDetails(collectedApi);
+
+          const ep = collectedApi.endpoints?.[0];
+          if (ep) {
+            const autoQ: Record<string, string> = {};
+            const autoP: Record<string, string> = {};
+            ep.queryParams?.forEach((param) => {
+              autoQ[param.name] = param.defaultValue || '';
+            });
+            ep.pathParams?.forEach((param) => {
+              autoP[param.name] = param.defaultValue || '';
+            });
+            setTimeout(() => {
+              executeCardTest(collectedApi, autoQ, autoP);
+            }, 0);
+          }
+        } else if (data.alreadyCovered) {
+          const safeHost = (() => {
+            try {
+              const parsed = new URL(submittedUrl.startsWith('http') ? submittedUrl : `https://${submittedUrl}`);
+              return parsed.hostname.replace(/^www\./i, '').toLowerCase();
+            } catch {
+              return '';
+            }
+          })();
+
+          const existingApi = [allApis, apiList].flat().find((item) => {
+            try {
+              return new URL(item.url).hostname.replace(/^www\./i, '').toLowerCase() === safeHost;
+            } catch {
+              return false;
+            }
+          });
+
+          if (existingApi) {
+            openApiDetails(existingApi);
+          } else {
+            fetchInitialApis();
+          }
+        }
       } else {
         setCollectStatus({ success: false, message: data.message });
       }
@@ -461,14 +585,53 @@ export default function App() {
       .map(([key, value]) => `${encodeURIComponent(key)}=${encodeURIComponent(String(value))}`);
     const queryStr = queryParts.length > 0 ? `?${queryParts.join('&')}` : '';
 
-    const targetUrl = `${api.url}${finalPath}${queryStr}`;
-    const requestMethod = ep.method || 'GET';
+    const endpointMethod = (ep.method || 'GET').toUpperCase();
+    const requestMethod = (apiMethodOverrides[api.id] || endpointMethod).toUpperCase();
 
-    const runDirectBrowserRequest = async (fallbackReason: string) => {
+    const buildTargetUrlCandidates = () => {
+      const safePath = (finalPath || '/').trim() || '/';
+      const normalizedPath = safePath.startsWith('/') ? safePath : `/${safePath}`;
+      const relativePath = normalizedPath.replace(/^\/+/, '');
+      const candidates: string[] = [];
+      const seen = new Set<string>();
+      const add = (value?: string | null) => {
+        if (!value) return;
+        if (seen.has(value)) return;
+        seen.add(value);
+        candidates.push(value);
+      };
+
+      try {
+        const base = new URL(api.url);
+        const basePath = base.pathname.endsWith('/') ? base.pathname : `${base.pathname}/`;
+        add(new URL(`${relativePath}${queryStr}`, `${base.origin}${basePath}`).toString());
+        add(new URL(`${relativePath}${queryStr}`, `${base.origin}/`).toString());
+
+        const looksLikeDocsPath = /api-guide|docs|documentation|swagger|reference/i.test(base.pathname);
+        if (looksLikeDocsPath && relativePath) {
+          add(`https://db.${base.hostname}/${relativePath}${queryStr}`);
+          add(`https://api.${base.hostname}/${relativePath}${queryStr}`);
+        }
+      } catch {
+        // ignore and keep legacy concat fallback below
+      }
+
+      add(`${api.url}${normalizedPath}${queryStr}`);
+      return candidates;
+    };
+
+    const targetUrlCandidates = buildTargetUrlCandidates();
+    const primaryTargetUrl = targetUrlCandidates[0] || `${api.url}${finalPath}${queryStr}`;
+
+    const runDirectBrowserRequest = async (
+      fallbackReason: string,
+      directTargetUrl = primaryTargetUrl,
+      directMethod = requestMethod
+    ) => {
       const startedAt = Date.now();
       try {
-        const directResponse = await fetch(targetUrl, {
-          method: requestMethod,
+        const directResponse = await fetch(directTargetUrl, {
+          method: directMethod,
           headers: {
             Accept: 'application/json, text/plain, */*'
           }
@@ -487,8 +650,8 @@ export default function App() {
             durationMs,
             data,
             source: 'browser-direct',
-            url: targetUrl,
-            error: directResponse.ok ? undefined : `Requisição direta retornou HTTP ${directResponse.status}.`
+            url: directTargetUrl,
+            error: directResponse.ok ? undefined : explainFailureStatus(directResponse.status, data, directResponse.statusText)
           }
         }));
       } catch (directError: any) {
@@ -499,22 +662,26 @@ export default function App() {
             ok: false,
             status: 0,
             durationMs,
-            data: api.sampleResponse || null,
+            data: {
+              error: 'Falha ao executar teste real.',
+              detail: directError?.message || 'Bloqueio de CORS/rede.',
+              fallbackReason
+            },
             source: 'browser-direct',
-            url: targetUrl,
+            url: directTargetUrl,
             error: `Não foi possível testar esta API no navegador (${fallbackReason}). Bloqueio de CORS ou rede externa indisponível.`
           }
         }));
       }
     };
 
-    try {
+    const runProxyRequest = async (proxyTargetUrl: string, proxyMethod: string) => {
       const response = await fetch('/api/proxy', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          url: targetUrl,
-          method: requestMethod,
+          url: proxyTargetUrl,
+          method: proxyMethod,
           apiId: api.id
         })
       });
@@ -526,26 +693,105 @@ export default function App() {
       }
 
       const json = await response.json();
+      const statusCode = json.status || response.status;
+      return {
+        response,
+        json,
+        statusCode,
+        proxyTargetUrl,
+        proxyMethod
+      };
+    };
+
+    const parseAllowMethods = (allowHeader?: string) =>
+      (allowHeader || '')
+        .split(',')
+        .map((value) => value.trim().toUpperCase())
+        .filter((value) => !!value && value !== 'OPTIONS' && value !== 'HEAD');
+
+    try {
+      const firstAttempt = await runProxyRequest(primaryTargetUrl, requestMethod);
+      let bestAttempt = firstAttempt;
+
+      const shouldRetryFallback =
+        firstAttempt.statusCode === 405 ||
+        firstAttempt.statusCode === 404 ||
+        String(firstAttempt.json?.error || '').toLowerCase().includes('method not allowed');
+
+      if (shouldRetryFallback) {
+        const allowMethods = parseAllowMethods(
+          firstAttempt.json?.headers?.allow || firstAttempt.json?.headers?.Allow
+        );
+        const methodCandidates = Array.from(
+          new Set([
+            requestMethod,
+            ...allowMethods,
+            requestMethod === 'GET' ? 'POST' : 'GET'
+          ])
+        ).slice(0, 4);
+
+        retryLoop:
+        for (const methodCandidate of methodCandidates) {
+          for (const urlCandidate of targetUrlCandidates) {
+            if (
+              methodCandidate === firstAttempt.proxyMethod &&
+              urlCandidate === firstAttempt.proxyTargetUrl
+            ) {
+              continue;
+            }
+
+            const attempt = await runProxyRequest(urlCandidate, methodCandidate);
+            bestAttempt = attempt;
+            const solved = attempt.statusCode < 400 && attempt.json?.ok !== false;
+            const movedOutOfMethodError = attempt.statusCode !== 405 && attempt.statusCode !== 404;
+            if (solved || movedOutOfMethodError) {
+              break retryLoop;
+            }
+          }
+        }
+      }
+
+      const response = bestAttempt.response;
+      const json = bestAttempt.json;
+      const statusCode = bestAttempt.statusCode;
+      const usedSuccessfulAlternativeMethod =
+        statusCode < 400 &&
+        bestAttempt.proxyMethod &&
+        bestAttempt.proxyMethod !== requestMethod;
+
+      if (usedSuccessfulAlternativeMethod) {
+        setApiMethodOverrides((prev) => ({
+          ...prev,
+          [api.id]: bestAttempt.proxyMethod
+        }));
+      }
+
       if (json?.autoBlocked) {
         setAllApis((prev) => prev.filter((item) => item.id !== api.id));
         setApiList((prev) => prev.filter((item) => item.id !== api.id));
       }
+      if ((statusCode === 401 || statusCode === 403) && api.auth === 'none') {
+        setAllApis((prev) => prev.map((item) => item.id === api.id ? { ...item, auth: 'apiKey' } : item));
+        setApiList((prev) => prev.map((item) => item.id === api.id ? { ...item, auth: 'apiKey' } : item));
+      }
       setCardResults(prev => ({
         ...prev,
         [api.id]: {
-          ok: response.ok && json.ok !== false && json.status < 400,
-          status: json.status || response.status,
+          ok: response.ok && json.ok !== false && statusCode < 400,
+          status: statusCode,
           durationMs: json.durationMs || 50,
           data: json.data || json,
           source: 'proxy',
-          url: targetUrl,
+          url: bestAttempt.proxyTargetUrl,
           error: json?.autoBlocked
             ? `API removida automaticamente do catálogo: ${json?.blockedReason || 'falha recorrente'}`
+            : statusCode >= 400
+              ? `${explainFailureStatus(statusCode, json?.data, json?.statusText)}${bestAttempt.proxyMethod !== requestMethod ? ` (método alternativo tentado: ${bestAttempt.proxyMethod})` : ''}`
             : undefined
         }
       }));
     } catch (err: any) {
-      await runDirectBrowserRequest(err?.message || 'proxy indisponível');
+      await runDirectBrowserRequest(err?.message || 'proxy indisponível', primaryTargetUrl, requestMethod);
     } finally {
       setCardLoading(prev => ({ ...prev, [api.id]: false }));
     }
@@ -582,10 +828,26 @@ export default function App() {
   const renderCardContentBox = (api: FreeApiInfo) => {
     const hasLiveResult = !!cardResults[api.id];
     const liveInfo = cardResults[api.id];
-    const sourceData = hasLiveResult ? liveInfo.data : api.sampleResponse;
+    const sourceData = hasLiveResult ? liveInfo.data : resolveInitialSampleData(api.sampleResponse);
 
     // Loading State Spinner overlay inside the container
     const isLoading = !!cardLoading[api.id];
+
+    if (!hasLiveResult && !sourceData) {
+      return (
+        <div className="bg-slate-950 border border-slate-850 p-4 rounded-xl text-slate-200 min-h-[140px] flex flex-col justify-center">
+          <p className="text-xs font-bold uppercase tracking-wide text-slate-400 mb-2">
+            Estrutura de retorno real
+          </p>
+          <p className="text-sm text-slate-200">
+            Clique em <strong>Testar API e Mostrar Estrutura</strong> para carregar o payload real deste endpoint.
+          </p>
+          <p className="text-[11px] text-slate-500 mt-2">
+            Nenhum mock local será usado para simular resposta.
+          </p>
+        </div>
+      );
+    }
 
     // Sub-renderer for Open-Meteo Weather
     if (api.id === 'open-meteo' && sourceData) {
@@ -2037,7 +2299,9 @@ export default function App() {
   const handleCopyJson = (apiId: string) => {
     const hasLiveResult = !!cardResults[apiId];
     const liveInfo = cardResults[apiId];
-    const sourceData = hasLiveResult ? liveInfo.data : selectedApi?.sampleResponse;
+    const sourceData = hasLiveResult
+      ? liveInfo.data
+      : resolveInitialSampleData(selectedApi?.sampleResponse);
     const jsonStr = formatJson(sourceData);
     navigator.clipboard.writeText(jsonStr);
     setCopied(true);
@@ -2135,8 +2399,10 @@ export default function App() {
     return activeRawOptionsSource.filter((option) => option.name.toLowerCase().includes(q));
   }, [activeRawOptionsSource, rawCategorySearch]);
 
-  const rawCategoryPreview = rawCategoryMatches.slice(0, 18);
+  const rawCategoryPreview = rawCategoryMatches.slice(0, 24);
   const hiddenRawCategoryCount = Math.max(0, rawCategoryMatches.length - rawCategoryPreview.length);
+  const activeFilterCount = [selectedCategory, selectedSubcategory, selectedRawCategory].filter(Boolean).length;
+  const selectedFilterLabel = selectedRawCategory || selectedSubcategory || selectedCategory || '';
 
   const filteredApis = useMemo(() => {
     let list = baseList;
@@ -2177,8 +2443,38 @@ export default function App() {
   ]);
 
   useEffect(() => {
+    let active = true;
+    (async () => {
+      await preloadCatalogQuietly();
+      if (!active) return;
+    })();
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
     setVisibleApiLimit(INITIAL_VISIBLE_APIS);
   }, [query, selectedCategory, selectedSubcategory, selectedRawCategory, baseList.length]);
+
+  useEffect(() => {
+    if (!isFilterPanelOpen) return;
+
+    const handleEsc = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') {
+        setIsFilterPanelOpen(false);
+      }
+    };
+
+    window.addEventListener('keydown', handleEsc);
+    return () => window.removeEventListener('keydown', handleEsc);
+  }, [isFilterPanelOpen]);
+
+  useEffect(() => {
+    if (selectedCategory || selectedSubcategory || selectedRawCategory) {
+      setIsDirectoryVisible(true);
+    }
+  }, [selectedCategory, selectedSubcategory, selectedRawCategory]);
 
   const visibleApis = useMemo(
     () => filteredApis.slice(0, visibleApiLimit),
@@ -2196,7 +2492,9 @@ export default function App() {
     const pParams = cardPathParams[api.id] || {};
     const presets = getPresetsForApi(api);
     const isSearching = !!cardLoading[api.id];
-    const sourceData = currentResult ? currentResult.data : api.sampleResponse;
+    const sourceData = currentResult
+      ? currentResult.data
+      : resolveInitialSampleData(api.sampleResponse);
     const previewString = formatJson(sourceData);
     const responseMap = buildResponseMap(sourceData);
 
@@ -2243,7 +2541,7 @@ export default function App() {
                   ? 'bg-emerald-50 text-emerald-700 border-emerald-200' 
                   : 'bg-amber-50 text-amber-700 border-amber-200'
               }`}>
-                {api.auth === 'none' ? 'SEM AUTENTICAÇÃO' : 'CHAVE MOCKADA'}
+                {api.auth === 'none' ? 'SEM AUTENTICAÇÃO' : 'REQUER CHAVE/TOKEN'}
               </span>
             </div>
           </div>
@@ -2466,7 +2764,13 @@ export default function App() {
                     ) : (
                       <span className="flex items-center gap-1 font-black shrink-0 uppercase tracking-widest text-[10.5px]">
                         <AlertTriangle className="w-4 h-4 text-rose-600 shrink-0" />
-                        Erro Interno ou Falha 
+                        {currentResult.status === 401
+                          ? 'Autenticação Necessária'
+                          : currentResult.status === 403
+                            ? 'Acesso Negado'
+                            : currentResult.status === 429
+                              ? 'Limite Excedido'
+                              : 'Falha na Requisição'}
                       </span>
                     )}
                   </div>
@@ -2553,7 +2857,7 @@ export default function App() {
               </div>
 
               <p className="text-[10px] text-slate-500 font-mono italic">
-                Fonte do teste: {currentResult?.source === 'proxy' ? 'proxy backend' : currentResult?.source === 'browser-direct' ? 'requisição direta do navegador' : 'mock local'} · Retorno recebido: {previewString.length} caracteres estruturados.
+                Fonte do teste: {currentResult?.source === 'proxy' ? 'proxy backend' : currentResult?.source === 'browser-direct' ? 'requisição direta do navegador' : 'catálogo local'} · Retorno recebido: {previewString.length} caracteres estruturados.
               </p>
             </div>
 
@@ -2585,7 +2889,7 @@ export default function App() {
 
           <div className="space-y-2">
             <h1 className="text-2xl md:text-5xl font-black text-slate-900 tracking-tight font-display max-w-2xl mx-auto leading-none">
-              Busque API gratuitamente.
+              Busque API.
             </h1>
           </div>
 
@@ -2633,190 +2937,222 @@ export default function App() {
               </button>
             </form>
 
-            {/* APIs Count Badge */}
+            {/* Search actions */}
             <div className="mt-4 flex items-center justify-center gap-2 flex-wrap relative z-10">
-              <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10.5px] font-mono font-bold bg-indigo-50 text-indigo-700 border border-indigo-100">
-                <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-                Acervo: <strong className="font-sans text-xs">{totalApis} APIs Ativas</strong> 
-              </span>
-
+              <button
+                type="button"
+                onClick={handleShowAllApis}
+                className="inline-flex items-center gap-1.5 px-4 py-1.5 rounded-full text-[11px] font-black uppercase tracking-wide bg-slate-900 text-white hover:bg-indigo-600 transition cursor-pointer"
+              >
+                Ver todas APIs
+              </button>
+              {!isDirectoryVisible && (
+                <span className="text-[11px] text-slate-500 font-medium">
+                  
+                </span>
+              )}
             </div>
           </div>
 
-          {/* CATEGORY EXPLORER & FILTERS SYSTEM */}
-          <div className="pt-6 border-t border-slate-100 max-w-5xl mx-auto">
-            <div className="bg-white border border-slate-200 rounded-2xl p-4 md:p-5 shadow-sm space-y-5">
-              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
-                <div>
-                  <h3 className="text-sm font-black text-slate-800 tracking-tight">Categorias</h3>
-                  <p className="text-xs text-slate-500">
-                    Escolha o departamento, depois a subcategoria e finalize na categoria real.
-                  </p>
-                </div>
-                {(selectedCategory || selectedSubcategory || selectedRawCategory || query || rawCategorySearch.trim()) && (
-                  <button
-                    onClick={() => {
-                      setSelectedCategory('');
-                      setSelectedSubcategory('');
-                      setSelectedRawCategory('');
-                      setRawCategorySearch('');
-                      setQuery('');
-                    }}
-                    className="text-[11px] font-bold text-rose-600 hover:text-rose-800 bg-rose-50 hover:bg-rose-100 border border-rose-200 px-3 py-1.5 rounded-lg transition cursor-pointer self-start md:self-auto"
-                  >
-                    Limpar filtros
-                  </button>
-                )}
-              </div>
+          {/* COMPACT CATEGORY FILTER */}
+          <div className="pt-6 border-t border-slate-100 max-w-3xl mx-auto">
+            <div className="flex items-center justify-center gap-2 flex-wrap">
+              <button
+                type="button"
+                onClick={() => setIsFilterPanelOpen(true)}
+                className="text-[11px] font-bold text-slate-800 bg-white border border-slate-300 px-4 py-1.5 rounded-full hover:bg-slate-50 transition cursor-pointer"
+              >
+                Filtro{activeFilterCount > 0 ? ` (${activeFilterCount})` : ''}
+              </button>
 
-              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
-                {categoryIndex.categoryCards.map((cat) => {
-                  const isActive = selectedCategory === cat.name;
-                  return (
+              {selectedFilterLabel && (
+                <span className="text-[11px] text-slate-600 bg-slate-100 border border-slate-200 rounded-full px-3 py-1">
+                  {selectedFilterLabel}
+                </span>
+              )}
+
+              {(selectedCategory || selectedSubcategory || selectedRawCategory || query.trim()) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setSelectedCategory('');
+                    setSelectedSubcategory('');
+                    setSelectedRawCategory('');
+                    setRawCategorySearch('');
+                    setQuery('');
+                  }}
+                  className="text-[11px] font-bold text-rose-700 hover:text-rose-900 px-2 py-1 transition cursor-pointer"
+                >
+                  Limpar
+                </button>
+              )}
+            </div>
+          </div>
+
+          {isFilterPanelOpen && typeof document !== 'undefined' && createPortal(
+            <div
+              className="fixed inset-0 z-[9999] bg-slate-900/25 backdrop-blur-[1px]"
+              onClick={() => {
+                setIsFilterPanelOpen(false);
+                setRawCategorySearch('');
+              }}
+            >
+              <div className="fixed top-20 md:top-24 left-1/2 -translate-x-1/2 w-[min(92vw,420px)]">
+                <div
+                  className="bg-white border border-slate-200 rounded-2xl shadow-2xl overflow-hidden"
+                  onClick={(event) => event.stopPropagation()}
+                >
+                  <div className="px-3.5 py-2.5 border-b border-slate-200 flex items-center justify-between">
+                    <h3 className="text-xs font-black text-slate-900">Filtro</h3>
                     <button
-                      key={cat.name}
                       type="button"
                       onClick={() => {
-                        if (isActive) {
-                          setSelectedCategory('');
-                          setSelectedSubcategory('');
-                        } else {
-                          setSelectedCategory(cat.name);
-                          setSelectedSubcategory('');
-                          setSelectedRawCategory('');
-                          setRawCategorySearch('');
-                          setQuery('');
-                        }
+                        setIsFilterPanelOpen(false);
+                        setRawCategorySearch('');
                       }}
-                      className={`p-3.5 rounded-xl border text-left transition duration-200 cursor-pointer ${
-                        isActive
-                          ? "bg-slate-900 border-slate-900 text-white shadow-md"
-                          : "bg-slate-50 border-slate-200 hover:bg-white hover:border-slate-300 text-slate-800"
-                      }`}
+                      className="text-[10px] font-bold text-slate-600 hover:text-slate-900 transition cursor-pointer"
                     >
-                      <div className="flex items-center justify-between mb-2">
-                        <span className="text-xl">{cat.icon}</span>
-                        <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${
-                          isActive
-                            ? "bg-white/10 border-white/25 text-white"
-                            : "bg-white border-slate-200 text-slate-600"
-                        }`}>
-                          {cat.count}
-                        </span>
-                      </div>
-                      <p className="text-[11.5px] font-black leading-tight">{cat.name}</p>
+                      Fechar
                     </button>
-                  );
-                })}
-              </div>
+                  </div>
 
-              {categoryIndex.categoryCards.length === 0 && (
-                <div className="bg-amber-50 border border-amber-150 text-amber-800 rounded-xl px-3 py-2 text-xs">
-                  Não há departamentos neste recorte atual. Use a busca de categorias reais logo abaixo.
-                </div>
-              )}
-
-              {selectedCategory && (
-                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
-                  <p className="text-[11px] font-semibold text-slate-600 mb-2">
-                    Subcategorias de <strong>{selectedCategory}</strong>
-                  </p>
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => setSelectedSubcategory('')}
-                      className={`px-3 py-1.5 text-xs rounded-full transition font-bold cursor-pointer ${
-                        !selectedSubcategory
-                          ? "bg-slate-900 text-white"
-                          : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-100"
-                      }`}
-                    >
-                      Todas
-                    </button>
-                    {selectedCategorySubOptions.map((sub) => {
-                      const isSubActive = selectedSubcategory === sub.name;
-                      return (
+                  <div className="p-3 space-y-3 max-h-[68vh] overflow-y-auto">
+                    <div>
+                      <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500 mb-1.5">Categoria</p>
+                      <div className="space-y-1.5">
                         <button
-                          key={sub.name}
                           type="button"
-                          onClick={() => setSelectedSubcategory(isSubActive ? '' : sub.name)}
-                          className={`px-3 py-1.5 text-xs rounded-full transition font-bold cursor-pointer ${
-                            isSubActive
-                              ? "bg-indigo-600 text-white"
-                              : "bg-white border border-slate-250 text-slate-700 hover:bg-slate-100"
+                          onClick={() => {
+                            setSelectedCategory('');
+                            setSelectedSubcategory('');
+                            setSelectedRawCategory('');
+                            setRawCategorySearch('');
+                            setQuery('');
+                            setIsFilterPanelOpen(false);
+                          }}
+                          className={`w-full text-left px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border transition cursor-pointer ${
+                            !selectedCategory && !selectedSubcategory && !selectedRawCategory
+                              ? 'bg-slate-900 text-white border-slate-900'
+                              : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
                           }`}
                         >
-                          {sub.name} ({sub.count})
+                          Todas as categorias
                         </button>
-                      );
-                    })}
+
+                        {categoryIndex.categoryCards.map((cat) => {
+                          const isActive = selectedCategory === cat.name;
+                          return (
+                            <button
+                              key={cat.name}
+                              type="button"
+                              onClick={() => {
+                                setSelectedCategory(cat.name);
+                                setSelectedSubcategory('');
+                                setSelectedRawCategory('');
+                                setRawCategorySearch('');
+                                setQuery('');
+                              }}
+                              className={`w-full text-left px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border transition cursor-pointer ${
+                                isActive
+                                  ? 'bg-slate-900 text-white border-slate-900'
+                                  : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                              }`}
+                            >
+                              {cat.name} <span className={`ml-1 ${isActive ? 'text-white/80' : 'text-slate-500'}`}>({cat.count})</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {selectedCategory && (
+                      <div>
+                        <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500 mb-1.5">Subcategoria</p>
+                        <div className="space-y-1.5">
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedSubcategory('');
+                              setSelectedRawCategory('');
+                              setQuery('');
+                              setIsFilterPanelOpen(false);
+                              setRawCategorySearch('');
+                            }}
+                            className="w-full text-left px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border border-slate-200 text-slate-700 hover:bg-slate-50 transition cursor-pointer"
+                          >
+                            Ver todas em {selectedCategory}
+                          </button>
+
+                          {selectedCategorySubOptions.map((sub) => (
+                            <button
+                              key={sub.name}
+                              type="button"
+                              onClick={() => {
+                                setSelectedSubcategory(sub.name);
+                                setSelectedRawCategory('');
+                                setQuery('');
+                                setIsFilterPanelOpen(false);
+                                setRawCategorySearch('');
+                              }}
+                              className={`w-full text-left px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border transition cursor-pointer ${
+                                selectedSubcategory === sub.name
+                                  ? 'bg-indigo-600 text-white border-indigo-600'
+                                  : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                              }`}
+                            >
+                              {sub.name} <span className={`ml-1 ${selectedSubcategory === sub.name ? 'text-white/85' : 'text-slate-500'}`}>({sub.count})</span>
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+                    )}
+
+                    <div className="border-t border-slate-200 pt-3">
+                      <p className="text-[10px] font-bold uppercase tracking-wide text-slate-500 mb-1.5">Categoria Real</p>
+                      <input
+                        type="text"
+                        value={rawCategorySearch}
+                        onChange={(e) => setRawCategorySearch(e.target.value)}
+                        placeholder="Buscar categoria real"
+                        className="w-full bg-white border border-slate-300 rounded-lg px-2.5 py-1.5 text-[11px] text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400"
+                      />
+
+                      <div className="space-y-1.5 max-h-40 overflow-y-auto pr-0.5 mt-2">
+                        {rawCategoryPreview.map((option) => {
+                          const isActive = selectedRawCategory === option.name;
+                          return (
+                            <button
+                              key={option.name}
+                              type="button"
+                              onClick={() => {
+                                setSelectedRawCategory(isActive ? '' : option.name);
+                                setSelectedCategory('');
+                                setSelectedSubcategory('');
+                                setQuery('');
+                                setIsFilterPanelOpen(false);
+                                setRawCategorySearch('');
+                              }}
+                              className={`w-full text-left px-2.5 py-1.5 rounded-lg text-[11px] font-semibold border transition cursor-pointer ${
+                                isActive
+                                  ? 'bg-indigo-600 text-white border-indigo-600'
+                                  : 'bg-white text-slate-700 border-slate-200 hover:bg-slate-50'
+                              }`}
+                            >
+                              {option.name} <span className={`ml-1 ${isActive ? 'text-white/85' : 'text-slate-500'}`}>({option.count})</span>
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
                   </div>
                 </div>
-              )}
-
-              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-3">
-                <div className="flex items-center justify-between gap-2">
-                  <h4 className="text-[11.5px] font-black uppercase tracking-wide text-slate-700 font-mono">
-                    Categorias Reais
-                  </h4>
-                  {selectedRawCategory && (
-                    <button
-                      type="button"
-                      onClick={() => setSelectedRawCategory('')}
-                      className="text-[11px] font-bold text-indigo-700 hover:text-indigo-900 cursor-pointer"
-                    >
-                      Remover seleção
-                    </button>
-                  )}
-                </div>
-
-                <div className="relative">
-                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-                  <input
-                    type="text"
-                    value={rawCategorySearch}
-                    onChange={(e) => setRawCategorySearch(e.target.value)}
-                    placeholder="Buscar categoria real: foto, clima, fintech, games, educação..."
-                    className="w-full bg-white border border-slate-250 rounded-lg pl-9 pr-3 py-2 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400"
-                  />
-                </div>
-
-                <div className="flex flex-wrap gap-2">
-                  {rawCategoryPreview.map((option) => {
-                    const isActive = selectedRawCategory === option.name;
-                    return (
-                      <button
-                        key={option.name}
-                        type="button"
-                        onClick={() => setSelectedRawCategory(isActive ? '' : option.name)}
-                        className={`px-3 py-1.5 rounded-lg text-[11px] border font-semibold transition cursor-pointer ${
-                          isActive
-                            ? "bg-indigo-600 text-white border-indigo-650 shadow-xs"
-                            : "bg-white text-slate-700 border-slate-250 hover:bg-slate-100"
-                        }`}
-                      >
-                        {option.name} ({option.count})
-                      </button>
-                    );
-                  })}
-                </div>
-
-                {rawCategoryPreview.length === 0 && (
-                  <p className="text-[11px] text-slate-500">
-                    Nenhuma categoria real encontrada para esse termo.
-                  </p>
-                )}
-
-                {hiddenRawCategoryCount > 0 && (
-                  <p className="text-[11px] text-slate-500">
-                    +{hiddenRawCategoryCount} categorias adicionais. Continue digitando para filtrar.
-                  </p>
-                )}
               </div>
-            </div>
-          </div>
+            </div>,
+            document.body
+          )}
 
           {/* COLETOR AUTOMÁTICO DE NOVAS APIs (PIRATE STYLE WORKER) */}
+          {isDirectoryVisible && (
           <div className="max-w-xl mx-auto pt-4">
             {!showCollector ? (
               <button
@@ -2898,32 +3234,6 @@ export default function App() {
               </div>
             )}
           </div>
-
-          {/* Active Filter Indicators */}
-          {(selectedCategory || selectedSubcategory || selectedRawCategory || query.trim()) && (
-            <div className="pt-4 border-t border-slate-150 flex flex-wrap items-center justify-center gap-1.5 text-xs font-mono">
-              <span className="text-slate-405 font-bold">Filtros Ativos:</span>
-              {selectedCategory && (
-                <span className="bg-indigo-50 text-indigo-700 border border-indigo-150 px-2 py-0.5 rounded-md font-bold text-[11px]">
-                  Categoria: {selectedCategory}
-                </span>
-              )}
-              {selectedSubcategory && (
-                <span className="bg-amber-50 text-amber-700 border border-amber-150 px-2 py-0.5 rounded-md font-bold text-[11px]">
-                  Subcategoria: {selectedSubcategory}
-                </span>
-              )}
-              {selectedRawCategory && (
-                <span className="bg-cyan-50 text-cyan-700 border border-cyan-150 px-2 py-0.5 rounded-md font-bold text-[11px]">
-                  Categoria Real: {selectedRawCategory}
-                </span>
-              )}
-              {query.trim() && (
-                <span className="bg-slate-100 text-slate-700 border border-slate-200 px-2 py-0.5 rounded-md font-bold text-[11px]">
-                  Busca: "{query.trim()}"
-                </span>
-              )}
-            </div>
           )}
 
         </div>
@@ -2931,7 +3241,30 @@ export default function App() {
 
       {/* SEÇÃO PRINCIPAL DO DIRETÓRIO */}
       <main className="flex-1 p-5 md:p-8 max-w-6xl mx-auto w-full relative z-10">
-        {loading ? (
+        {!isDirectoryVisible ? (
+          <div className="max-w-3xl mx-auto">
+            <div className="bg-white/95 backdrop-blur-xs border border-slate-200 rounded-2xl p-6 md:p-7 shadow-xs text-center">
+              <h2 className="text-sm md:text-base font-black uppercase tracking-wider text-slate-900">
+                Digite sua busca para listar APIs
+              </h2>
+              <p className="mt-2 text-xs text-slate-500">
+                Os resultados aparecem só depois da pesquisa ou ao clicar em <strong>Ver todas APIs</strong>.
+              </p>
+              <div className="mt-4 flex items-center justify-center gap-2 flex-wrap">
+                {shortcuts.map((shortcut) => (
+                  <button
+                    key={shortcut.label}
+                    type="button"
+                    onClick={() => handleSearch(undefined, shortcut.term)}
+                    className="text-[11px] font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 border border-slate-200 px-3 py-1.5 rounded-full transition cursor-pointer"
+                  >
+                    {shortcut.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          </div>
+        ) : loading ? (
           <div className="flex flex-col items-center justify-center py-24 text-center">
             <Loader2 className="w-12 h-12 text-indigo-600 animate-spin mb-4" />
             <span className="text-xs font-mono font-black uppercase tracking-widest text-slate-400">Varrendo o Índice de APIs...</span>
@@ -2945,13 +3278,7 @@ export default function App() {
               Não encontramos APIs correspondentes a essa consulta de busca. Tente buscar termos comuns ou clique no botão abaixo.
             </p>
             <button 
-              onClick={() => {
-                setSelectedCategory('');
-                setSelectedSubcategory('');
-                setSelectedRawCategory('');
-                setRawCategorySearch('');
-                setQuery('');
-              }}
+              onClick={handleShowAllApis}
               className="text-xs font-bold text-indigo-600 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 px-4 py-2 rounded-lg transition cursor-pointer"
             >
               Exibir APIs Recomendadas
@@ -2989,7 +3316,7 @@ export default function App() {
                           ? 'bg-emerald-50 text-emerald-600 border-emerald-100' 
                           : 'bg-amber-50 text-amber-600 border-amber-100'
                       }`}>
-                        {api.auth === 'none' ? 'SEM CHAVE' : 'CHAVE MOCK'}
+                        {api.auth === 'none' ? 'SEM CHAVE' : 'COM AUTENTICAÇÃO'}
                       </span>
                     </div>
 

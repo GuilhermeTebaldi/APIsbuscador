@@ -27,12 +27,19 @@ export default async function handler(req: any, res: any) {
   try {
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), 12000);
+    const defaultHeaders: Record<string, string> = {
+      Accept: 'application/json, text/plain, */*',
+      'Accept-Language': 'en-US,en;q=0.9',
+      'Cache-Control': 'no-cache',
+      Pragma: 'no-cache',
+      'User-Agent':
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36'
+    };
 
     const fetchOptions: RequestInit = {
       method,
       headers: {
-        Accept: 'application/json, text/plain, */*',
-        'User-Agent': 'API-Hunter-Vercel-Proxy/1.0',
+        ...defaultHeaders,
         ...headers
       },
       signal: controller.signal

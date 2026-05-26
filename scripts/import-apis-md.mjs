@@ -20,6 +20,7 @@ function cleanText(value = "") {
     .replace(/^\uFEFF/, "")
     .replace(/✅/g, "")
     .replace(/~~/g, "")
+    .replace(/^"+|"+$/g, "")
     .replace(/\s+/g, " ")
     .trim();
 }
@@ -80,10 +81,56 @@ function pickCategory(name, func, url) {
   return { category: "Utilidades", subcategory: "Geral" };
 }
 
-function guessAuth(name, func, url) {
-  const t = `${name} ${func} ${url}`.toLowerCase();
+function guessAuth(name, func, url, groupCategory = "", subcategory = "") {
+  const t = `${name} ${func} ${url} ${groupCategory} ${subcategory}`.toLowerCase();
+  const host = (() => {
+    try {
+      return new URL(url).hostname.toLowerCase();
+    } catch {
+      return "";
+    }
+  })();
   if (url.includes("localhost") || url.includes(".example")) return "other";
+
+  const strictAuthHosts = [
+    "api.openai.com",
+    "api.anthropic.com",
+    "api.groq.com",
+    "openrouter.ai",
+    "api.deepinfra.com",
+    "sentry.io",
+    "api.the-odds-api.com",
+    "api.football-data.org",
+    "api.search.brave.com"
+  ];
+
+  if (strictAuthHosts.some((h) => host === h || host.endsWith(`.${h}`))) {
+    return "apiKey";
+  }
+
   if (
+    t.includes("helicone") ||
+    t.includes("langfuse") ||
+    t.includes("promptlayer") ||
+    t.includes("humanloop") ||
+    t.includes("portkey") ||
+    t.includes("openpipe") ||
+    t.includes("helius") ||
+    t.includes("dune") ||
+    t.includes("bitquery") ||
+    t.includes("arkham") ||
+    t.includes("chainbase") ||
+    t.includes("zerion") ||
+    t.includes("birdeye") ||
+    t.includes("rugcheck") ||
+    t.includes("solana.fm") ||
+    t.includes("hyperdx") ||
+    t.includes("betterstack") ||
+    t.includes("plausible") ||
+    t.includes("umami") ||
+    t.includes("logsnag") ||
+    t.includes("novu") ||
+    t.includes("cal.com") ||
     t.includes("openai") ||
     t.includes("anthropic") ||
     t.includes("groq") ||
@@ -92,6 +139,10 @@ function guessAuth(name, func, url) {
     t.includes("firecrawl") ||
     t.includes("tavily") ||
     t.includes("exa") ||
+    t.includes("auth") ||
+    t.includes("authorization") ||
+    t.includes("bearer") ||
+    t.includes("oauth") ||
     t.includes("api key") ||
     t.includes("token")
   ) {
@@ -141,6 +192,32 @@ function parseEntriesFromMd(mdText) {
 
     const cols = raw.split("\t");
 
+    // Padrão atual principal: Status<TAB>Nome<TAB>URL<TAB>Função<TAB>Categoria Real<TAB>Grupo<TAB>Subcategoria
+    if (cols.length >= 3) {
+      const c0 = cleanText(cols[0] || "");
+      const c1 = cleanText(cols[1] || "");
+      const c2 = cleanText(cols[2] || "");
+      const c3 = cleanText(cols[3] || "");
+      const c4 = cleanText(cols[4] || "");
+      const c5 = cleanText(cols[5] || "");
+      const c6 = cleanText(cols[6] || "");
+      if (isUrl(c2) && c1 && c1.toLowerCase() !== "nome") {
+        parsed.push({
+          name: c1,
+          url: c2,
+          func: c3 || "API pública",
+          realCategory: c4 || c3 || "API pública",
+          groupCategory: c5,
+          subcategory: c6,
+          source: "tab-status-v2",
+          status: c0
+        });
+        candidateName = "";
+        candidateHint = "";
+        continue;
+      }
+    }
+
     // Padrão principal: Nome<TAB>URL<TAB>Função
     if (cols.length >= 3) {
       const c0 = cleanText(cols[0] || "");
@@ -149,7 +226,13 @@ function parseEntriesFromMd(mdText) {
 
       if (isUrl(c1)) {
         if (c0 && c0.toLowerCase() !== "nome") {
-          parsed.push({ name: c0, url: c1, func: c2 || "API pública", source: "tab" });
+          parsed.push({
+            name: c0,
+            url: c1,
+            func: c2 || "API pública",
+            realCategory: c2 || "API pública",
+            source: "tab"
+          });
           candidateName = "";
           candidateHint = "";
           continue;
@@ -164,7 +247,13 @@ function parseEntriesFromMd(mdText) {
         const cUrl = cleanText(cols[2] || "");
         const cFunc = cleanText(cols[3] || "");
         if ((cStatusRaw.includes("✅") || cStatus.toLowerCase() === "ok" || cStatus === "") && isUrl(cUrl)) {
-          parsed.push({ name: cName, url: cUrl, func: cFunc || "API pública", source: "tab-status" });
+          parsed.push({
+            name: cName,
+            url: cUrl,
+            func: cFunc || "API pública",
+            realCategory: cFunc || "API pública",
+            source: "tab-status"
+          });
           candidateName = "";
           candidateHint = "";
           continue;
@@ -176,7 +265,13 @@ function parseEntriesFromMd(mdText) {
     if (isUrl(line)) {
       const fallbackName = candidateName || `API ${new URL(line).hostname}`;
       const fallbackFunc = candidateHint || "Validada manualmente";
-      parsed.push({ name: fallbackName, url: line, func: fallbackFunc, source: "standalone" });
+      parsed.push({
+        name: fallbackName,
+        url: line,
+        func: fallbackFunc,
+        realCategory: fallbackFunc,
+        source: "standalone"
+      });
       candidateName = "";
       candidateHint = "";
       continue;
@@ -234,12 +329,17 @@ function buildCatalog(entries) {
   for (const item of entries) {
     const name = cleanText(item.name);
     const func = cleanText(item.func || "API pública");
+    const manualRealCategory = cleanText(item.realCategory || "");
+    const manualGroup = cleanText(item.groupCategory || "");
+    const manualSub = cleanText(item.subcategory || "");
     const url = cleanText(item.url);
     if (!name || !isUrl(url)) continue;
 
-    const { category: groupCategory, subcategory } = pickCategory(name, func, url);
-    const realCategory = func || "API pública";
-    const auth = guessAuth(name, func, url);
+    const picked = pickCategory(name, manualRealCategory || func, url);
+    const groupCategory = manualGroup || picked.category;
+    const subcategory = manualSub || picked.subcategory;
+    const realCategory = manualRealCategory || func || "API pública";
+    const auth = guessAuth(name, `${func} ${realCategory}`, url, groupCategory, subcategory);
     const idSeed = slugify(name);
     const urlHash = crypto.createHash("md5").update(normalizeUrl(url)).digest("hex").slice(0, 6);
     let id = `${idSeed}-${urlHash}`;
@@ -258,12 +358,7 @@ function buildCatalog(entries) {
       url: baseUrlOf(url),
       docsUrl: url,
       endpoints: [toEndpoint(url, name)],
-      auth,
-      sampleResponse: {
-        source: "apis.md",
-        endpoint: url,
-        note: "Resposta real varia conforme autenticação e parâmetros."
-      }
+      auth
     });
   }
 
@@ -323,10 +418,12 @@ function main() {
 
   fs.mkdirSync(SECRET_DIR, { recursive: true });
   fs.writeFileSync(OUTPUT_JSON, JSON.stringify(catalog, null, 2), "utf-8");
+  fs.writeFileSync(STATIC_CATALOG_PATH, JSON.stringify(catalog, null, 2), "utf-8");
   rewriteApisMd(catalog);
 
   console.log(`[import-apis-md] entradas lidas: ${entries.length}`);
   console.log(`[import-apis-md] catálogo salvo: ${catalog.length} APIs -> ${OUTPUT_JSON}`);
+  console.log(`[import-apis-md] catálogo público atualizado: ${STATIC_CATALOG_PATH}`);
   console.log(`[import-apis-md] apis.md atualizado com status ✅ e nome riscado.`);
 }
 

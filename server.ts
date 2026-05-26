@@ -31,6 +31,15 @@ if (!geminiApiKey) {
   console.warn("[Gemini] GEMINI_API_KEY não configurada. Usando fallback local para buscas inteligentes.");
 }
 
+const DEFAULT_FETCH_HEADERS: Record<string, string> = {
+  "Accept": "application/json, text/plain, */*",
+  "Accept-Language": "en-US,en;q=0.9",
+  "Cache-Control": "no-cache",
+  "Pragma": "no-cache",
+  "User-Agent":
+    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/136.0.0.0 Safari/537.36"
+};
+
 // A robust set of high-quality verified default free APIs to make the initial experience instant & fantastic
 const VERIFIED_APIs = [
   {
@@ -1794,8 +1803,12 @@ function markApiBlocked(apiId: string, reason: string, source: ApiBlockSource, s
   console.warn(`[Health] API bloqueada automaticamente: ${apiId} (${reason})`);
 }
 
-function shouldAutoBlockFromStatus(status: number, failStreak: number) {
-  if (status === 401 || status === 403) return failStreak >= 2;
+function shouldAutoBlockFromStatus(status: number, failStreak: number, apiAuth: string = "none") {
+  if (status === 401 || status === 403) {
+    if (apiAuth !== "none") return false;
+    if (status === 401) return failStreak >= 4;
+    return failStreak >= 5;
+  }
   if (status === 404 || status === 410) return failStreak >= 3;
   if (status >= 500) return failStreak >= 5;
   return false;
@@ -1810,6 +1823,8 @@ function recordProxyHealthObservation(params: {
   const { apiId, status, ok, url } = params;
   if (!apiId || typeof apiId !== "string") return;
   if (API_BLOCKLIST[apiId]) return;
+  const foundApi = [...DYNAMIC_APIs, ...VERIFIED_APIs].find((api) => api.id === apiId);
+  const apiAuth = foundApi?.auth || "none";
 
   const current = API_HEALTH_STATE[apiId] || {
     apiId,
@@ -1835,7 +1850,7 @@ function recordProxyHealthObservation(params: {
   API_HEALTH_STATE[apiId] = current;
   saveApiHealthState();
 
-  if (!hasSuccess && typeof status === "number" && shouldAutoBlockFromStatus(status, current.failStreak)) {
+  if (!hasSuccess && typeof status === "number" && shouldAutoBlockFromStatus(status, current.failStreak, apiAuth)) {
     const reason = `Falha recorrente detectada (HTTP ${status}, sequência ${current.failStreak})`;
     markApiBlocked(apiId, reason, "auto-proxy", status, url);
   }
@@ -1897,8 +1912,7 @@ async function runBulkCatalogAudit(options?: { limit?: number; sampleOnly?: bool
       const response = await fetch(testUrl, {
         method,
         headers: {
-          "Accept": "application/json, text/plain, */*",
-          "User-Agent": "API-Pirate-Bulk-Audit/1.0"
+          ...DEFAULT_FETCH_HEADERS
         },
         signal: controller.signal
       });
@@ -1918,7 +1932,15 @@ async function runBulkCatalogAudit(options?: { limit?: number; sampleOnly?: bool
         dataPreview = text.slice(0, 140);
       }
 
-      if ((status === 401 || status === 403 || status === 404 || status === 410) && !sampleOnly) {
+      const apiAuth = api?.auth || "none";
+      const shouldBlockForAudit =
+        !sampleOnly && (
+          status === 404 ||
+          status === 410 ||
+          ((status === 401 || status === 403) && apiAuth === "none")
+        );
+
+      if (shouldBlockForAudit) {
         markApiBlocked(
           api.id,
           `Audit em lote detectou API indisponível/fechada (HTTP ${status})`,
@@ -2014,8 +2036,7 @@ app.post("/api/collect", async (req, res) => {
     const testResponse = await fetch(url, {
       method: "GET",
       headers: {
-        "Accept": "application/json, text/plain, */*",
-        "User-Agent": "API-Pirate-Collector/1.0"
+        ...DEFAULT_FETCH_HEADERS
       }
     });
 
@@ -2296,8 +2317,7 @@ app.post("/api/proxy", async (req, res) => {
     const fetchOptions: RequestInit = {
       method,
       headers: {
-        "Accept": "application/json, text/plain, */*",
-        "User-Agent": "API-Hunter-Client/1.0",
+        ...DEFAULT_FETCH_HEADERS,
         ...headers
       }
     };
