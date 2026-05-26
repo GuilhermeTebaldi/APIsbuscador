@@ -61,7 +61,6 @@ export default function App() {
   const [isFallback, setIsFallback] = useState(false);
   const [totalApis, setTotalApis] = useState<number>(55);
   const [offlineCatalog, setOfflineCatalog] = useState<FreeApiInfo[] | null>(null);
-  const [backendApiAvailable, setBackendApiAvailable] = useState(false);
 
   // States per Card
   const [cardQueryParams, setCardQueryParams] = useState<Record<string, Record<string, string>>>({});
@@ -222,24 +221,13 @@ export default function App() {
 
   const fetchInitialApis = async () => {
     setLoading(true);
-    const isStaticVercelRuntime =
-      typeof window !== 'undefined' && window.location.hostname.endsWith('vercel.app');
-
-    if (isStaticVercelRuntime) {
-      setBackendApiAvailable(false);
-      await applyOfflineFallback();
-      setLoading(false);
-      return;
-    }
 
     try {
       const res = await fetch('/api/defaults');
       const data = await parseJsonResponse(res);
       applyApisPayload(data, 'APIs Recomendadas');
-      setBackendApiAvailable(true);
     } catch (e) {
       console.warn("Backend /api/defaults indisponível. Modo offline ativo.");
-      setBackendApiAvailable(false);
       await applyOfflineFallback();
     } finally {
       setLoading(false);
@@ -254,14 +242,6 @@ export default function App() {
       return;
     }
 
-    const isStaticVercelRuntime =
-      typeof window !== 'undefined' && window.location.hostname.endsWith('vercel.app');
-    if (isStaticVercelRuntime) {
-      setBackendApiAvailable(false);
-      await applyOfflineFallback(activeTerm);
-      return;
-    }
-
     setLoading(true);
     try {
       const res = await fetch('/api/search', {
@@ -271,10 +251,8 @@ export default function App() {
       });
       const data = await parseJsonResponse(res);
       applyApisPayload(data, activeTerm);
-      setBackendApiAvailable(true);
     } catch (err) {
       console.warn("Backend /api/search indisponível. Busca local offline ativa.");
-      setBackendApiAvailable(false);
       await applyOfflineFallback(activeTerm);
     } finally {
       setLoading(false);
@@ -379,22 +357,51 @@ export default function App() {
     const queryStr = queryParts.length > 0 ? `?${queryParts.join('&')}` : '';
 
     const targetUrl = `${api.url}${finalPath}${queryStr}`;
+    const requestMethod = ep.method || 'GET';
 
-    if (!backendApiAvailable) {
-      setCardResults(prev => ({
-        ...prev,
-        [api.id]: {
-          ok: false,
-          status: 503,
-          durationMs: 0,
-          error: "Proxy do backend indisponível neste deploy. Teste real funciona quando o servidor Node /api/proxy estiver ativo.",
-          data: api.sampleResponse || null,
-          url: targetUrl
-        }
-      }));
-      setCardLoading(prev => ({ ...prev, [api.id]: false }));
-      return;
-    }
+    const runDirectBrowserRequest = async (fallbackReason: string) => {
+      const startedAt = Date.now();
+      try {
+        const directResponse = await fetch(targetUrl, {
+          method: requestMethod,
+          headers: {
+            Accept: 'application/json, text/plain, */*'
+          }
+        });
+        const durationMs = Date.now() - startedAt;
+        const contentType = directResponse.headers.get('content-type') || '';
+        const data = contentType.toLowerCase().includes('application/json')
+          ? await directResponse.json()
+          : await directResponse.text();
+
+        setCardResults(prev => ({
+          ...prev,
+          [api.id]: {
+            ok: directResponse.ok,
+            status: directResponse.status,
+            durationMs,
+            data,
+            source: 'browser-direct',
+            url: targetUrl,
+            error: directResponse.ok ? undefined : `Requisição direta retornou HTTP ${directResponse.status}.`
+          }
+        }));
+      } catch (directError: any) {
+        const durationMs = Date.now() - startedAt;
+        setCardResults(prev => ({
+          ...prev,
+          [api.id]: {
+            ok: false,
+            status: 0,
+            durationMs,
+            data: api.sampleResponse || null,
+            source: 'browser-direct',
+            url: targetUrl,
+            error: `Não foi possível testar esta API no navegador (${fallbackReason}). Bloqueio de CORS ou rede externa indisponível.`
+          }
+        }));
+      }
+    };
 
     try {
       const response = await fetch('/api/proxy', {
@@ -402,7 +409,7 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           url: targetUrl,
-          method: ep.method || 'GET'
+          method: requestMethod
         })
       });
 
@@ -420,21 +427,12 @@ export default function App() {
           status: json.status || response.status,
           durationMs: json.durationMs || 50,
           data: json.data || json,
+          source: 'proxy',
           url: targetUrl
         }
       }));
     } catch (err: any) {
-      setCardResults(prev => ({
-        ...prev,
-        [api.id]: {
-          ok: false,
-          status: 503,
-          durationMs: 0,
-          error: err.message || "Erro na requisição externa.",
-          data: api.sampleResponse || null,
-          url: targetUrl
-        }
-      }));
+      await runDirectBrowserRequest(err?.message || 'proxy indisponível');
     } finally {
       setCardLoading(prev => ({ ...prev, [api.id]: false }));
     }
@@ -2393,7 +2391,7 @@ export default function App() {
               </div>
 
               <p className="text-[10px] text-slate-500 font-mono italic">
-                Requisição simulada via proxy reverso seguro. Retorno recebido: {previewString.length} caracteres estruturados.
+                Fonte do teste: {currentResult?.source === 'proxy' ? 'proxy backend' : currentResult?.source === 'browser-direct' ? 'requisição direta do navegador' : 'mock local'} · Retorno recebido: {previewString.length} caracteres estruturados.
               </p>
             </div>
 
