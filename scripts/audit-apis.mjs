@@ -5,6 +5,16 @@ import path from "path";
 const BASE_URL = process.env.AUDIT_BASE_URL || "http://127.0.0.1:3000";
 const SECRET_DIR = path.join(process.cwd(), ".site-secret");
 const REPORT_PATH = path.join(SECRET_DIR, "last_audit_report.json");
+const STATIC_CATALOG_PATH = path.join(process.cwd(), "public", "apis-catalog.json");
+
+function normalizeHost(rawUrl) {
+  if (!rawUrl || typeof rawUrl !== "string") return "";
+  try {
+    return new URL(rawUrl).hostname.replace(/^www\./i, "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
 
 function parseArgs(argv) {
   const args = { limit: undefined, sampleOnly: false };
@@ -64,11 +74,41 @@ async function run() {
   const failed = report.filter((item) => !item.ok);
   const authErrors = failed.filter((item) => item.status === 401 || item.status === 403);
 
+  let removedFromStatic = 0;
+  if (!args.sampleOnly) {
+    const blockedRes = await fetch(`${BASE_URL}/api/admin/blocked`);
+    const blockedJson = await blockedRes.json();
+    const blockedEntries = Array.isArray(blockedJson?.blocked) ? blockedJson.blocked : [];
+    const blockedIds = new Set(blockedEntries.map((item) => item.apiId).filter(Boolean));
+    const blockedHosts = new Set(blockedEntries.map((item) => item.host).filter(Boolean));
+
+    if (fs.existsSync(STATIC_CATALOG_PATH)) {
+      const catalog = JSON.parse(fs.readFileSync(STATIC_CATALOG_PATH, "utf-8"));
+      if (Array.isArray(catalog)) {
+        const filtered = catalog.filter((api) => {
+          if (!api || !api.id) return false;
+          if (blockedIds.has(api.id)) return false;
+          const host = normalizeHost(api.url);
+          if (host && blockedHosts.has(host)) return false;
+          return true;
+        });
+
+        removedFromStatic = catalog.length - filtered.length;
+        if (removedFromStatic > 0) {
+          fs.writeFileSync(STATIC_CATALOG_PATH, JSON.stringify(filtered, null, 2), "utf-8");
+        }
+      }
+    }
+  }
+
   console.log(`[Audit] APIs auditadas: ${json.audited}`);
   console.log(`[Audit] APIs bloqueadas nesta rodada: ${json.blocked}`);
   console.log(`[Audit] Falhas totais no teste: ${failed.length}`);
   console.log(`[Audit] Falhas de autenticação (401/403): ${authErrors.length}`);
   console.log(`[Audit] Relatório salvo em: ${REPORT_PATH}`);
+  if (!args.sampleOnly) {
+    console.log(`[Audit] APIs removidas do catálogo estático: ${removedFromStatic}`);
+  }
 
   if (failed.length > 0) {
     console.log("\n[Audit] Primeiras falhas:");
