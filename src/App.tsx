@@ -19,6 +19,110 @@ const formatJson = (data: any): string => {
   }
 };
 
+type JsonMapRow = {
+  path: string;
+  kind: string;
+  detail: string;
+};
+
+const getJsonKind = (value: any): string => {
+  if (value === null) return 'null';
+  if (Array.isArray(value)) return 'array';
+  return typeof value;
+};
+
+const formatPrimitivePreview = (value: any): string => {
+  if (value === null) return 'null';
+  if (value === undefined) return 'undefined';
+  if (typeof value === 'string') {
+    return `"${value.length > 44 ? `${value.slice(0, 44)}...` : value}"`;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return String(value);
+  }
+  if (typeof value === 'bigint') {
+    return `${String(value)}n`;
+  }
+  return '[valor]';
+};
+
+const buildResponseMap = (
+  payload: any,
+  maxRows = 20,
+  maxDepth = 2
+): { rootKind: string; rootDetail: string; rows: JsonMapRow[]; truncated: boolean } => {
+  const rootKind = getJsonKind(payload);
+  const rows: JsonMapRow[] = [];
+  const queue: Array<{ path: string; value: any; depth: number }> = [{ path: '$', value: payload, depth: 0 }];
+
+  while (queue.length > 0 && rows.length < maxRows) {
+    const current = queue.shift()!;
+    const kind = getJsonKind(current.value);
+
+    if (kind === 'array') {
+      const arr = current.value as any[];
+      const sampleKind = arr.length > 0 ? getJsonKind(arr[0]) : 'vazio';
+      rows.push({
+        path: current.path,
+        kind,
+        detail: `${arr.length} item(ns)${arr.length > 0 ? `, exemplo: ${sampleKind}` : ''}`
+      });
+
+      if (current.depth < maxDepth && arr.length > 0) {
+        queue.push({
+          path: `${current.path}[0]`,
+          value: arr[0],
+          depth: current.depth + 1
+        });
+      }
+      continue;
+    }
+
+    if (kind === 'object') {
+      const obj = current.value as Record<string, any>;
+      const keys = Object.keys(obj);
+      rows.push({
+        path: current.path,
+        kind,
+        detail: keys.length === 0
+          ? 'objeto vazio'
+          : `chaves: ${keys.slice(0, 5).join(', ')}${keys.length > 5 ? '...' : ''}`
+      });
+
+      if (current.depth < maxDepth) {
+        keys.slice(0, 6).forEach((key) => {
+          queue.push({
+            path: current.path === '$' ? key : `${current.path}.${key}`,
+            value: obj[key],
+            depth: current.depth + 1
+          });
+        });
+      }
+      continue;
+    }
+
+    rows.push({
+      path: current.path,
+      kind,
+      detail: formatPrimitivePreview(current.value)
+    });
+  }
+
+  const rootDetail =
+    rootKind === 'array'
+      ? `${Array.isArray(payload) ? payload.length : 0} item(ns)`
+      : rootKind === 'object'
+        ? `${payload && typeof payload === 'object' ? Object.keys(payload).length : 0} campo(s) no objeto raiz`
+        : formatPrimitivePreview(payload);
+
+  return {
+    rootKind,
+    rootDetail,
+    rows,
+    truncated: queue.length > 0
+  };
+};
+
 const CATEGORIES_MAP = [
   {
     name: "Geografia & Clima",
@@ -2085,6 +2189,7 @@ export default function App() {
     const isSearching = !!cardLoading[api.id];
     const sourceData = currentResult ? currentResult.data : api.sampleResponse;
     const previewString = formatJson(sourceData);
+    const responseMap = buildResponseMap(sourceData);
 
     return (
       <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans selection:bg-slate-200">
@@ -2288,10 +2393,13 @@ export default function App() {
                   ) : (
                     <>
                       <Zap className="w-4 h-4 fill-current text-amber-300" />
-                      Testar Conexão / Chamar API Grátis
+                      Testar API e Mostrar Estrutura
                     </>
                   )}
                 </button>
+                <p className="text-[10px] text-slate-500 font-mono mt-2">
+                  Este teste busca o retorno real para mostrar exatamente o que existe dentro da API.
+                </p>
               </div>
 
             </div>
@@ -2363,6 +2471,51 @@ export default function App() {
             </div>
 
             {/* 2. RAW CODE VIEWER AND EXPORT */}
+            <div className="bg-white border border-slate-200 rounded-2xl p-5 shadow-sm space-y-3">
+              <div className="flex items-center justify-between text-xs font-mono uppercase tracking-wider text-slate-400 font-bold">
+                <span>Mapa da Resposta (o que tem dentro)</span>
+                <span className="text-[10px] text-slate-500 normal-case">
+                  raiz: <strong className="text-slate-700">{responseMap.rootKind}</strong>
+                </span>
+              </div>
+
+              <p className="text-[11px] text-slate-600 leading-snug">
+                Estrutura principal: <strong>{responseMap.rootDetail}</strong>
+              </p>
+
+              <div className="max-h-[220px] overflow-auto border border-slate-200 rounded-xl">
+                <table className="w-full text-[11px]">
+                  <thead className="bg-slate-50 sticky top-0">
+                    <tr className="text-left font-mono uppercase tracking-wide text-[10px] text-slate-500">
+                      <th className="px-3 py-2 border-b border-slate-200">Campo</th>
+                      <th className="px-3 py-2 border-b border-slate-200">Tipo</th>
+                      <th className="px-3 py-2 border-b border-slate-200">Conteúdo</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {responseMap.rows.map((row, idx) => (
+                      <tr key={`${row.path}-${idx}`} className="border-b border-slate-100 last:border-b-0">
+                        <td className="px-3 py-2 font-mono text-slate-700 break-all">{row.path}</td>
+                        <td className="px-3 py-2">
+                          <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-indigo-50 border border-indigo-100 text-indigo-700 font-mono text-[10px]">
+                            {row.kind}
+                          </span>
+                        </td>
+                        <td className="px-3 py-2 text-slate-600">{row.detail}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+
+              {responseMap.truncated && (
+                <p className="text-[10px] text-slate-500 font-mono">
+                  Estrutura parcial exibida para manter o desempenho.
+                </p>
+              )}
+            </div>
+
+            {/* 3. RAW CODE VIEWER AND EXPORT */}
             <div className="bg-slate-900 text-slate-100 border border-slate-800 rounded-2xl p-5 shadow-lg space-y-3">
               <div className="flex justify-between items-center text-xs font-mono">
                 <span className="text-slate-400 uppercase tracking-wider font-bold">Inspecionar Carga JSON (Payload bruto)</span>
