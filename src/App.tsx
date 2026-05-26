@@ -8,6 +8,7 @@ import {
 import { FreeApiInfo, QueryParamInfo, PathParamInfo, EndpointInfo } from './types';
 import { getPresetsForApi, CommandPreset } from './utils/presets';
 import { OFFLINE_DEFAULT_APIS } from './data/offlineDefaults';
+import pirateShipBg from './assets/images/pirate_ship_bg_1779738901287.png';
 
 // Helper to stringify JSON nicely
 const formatJson = (data: any): string => {
@@ -2126,7 +2127,7 @@ export default function App() {
     return activeRawOptionsSource.filter((option) => option.name.toLowerCase().includes(q));
   }, [activeRawOptionsSource, rawCategorySearch]);
 
-  const rawCategoryPreview = rawCategoryMatches.slice(0, 10);
+  const rawCategoryPreview = rawCategoryMatches.slice(0, 18);
   const hiddenRawCategoryCount = Math.max(0, rawCategoryMatches.length - rawCategoryPreview.length);
 
   const filteredApis = useMemo(() => {
@@ -2558,16 +2559,8 @@ export default function App() {
   // --- CATALOGO COMUM (WHITE LAYOUT DIRECTORY VIEW) ---
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 flex flex-col font-sans selection:bg-indigo-100 relative overflow-hidden">
-      
-      {/* BACKGROUND DIFFUSED EMBARKATION (PIRATE BOAT WATERMARK) */}
-      <div className="absolute inset-0 pointer-events-none overflow-hidden opacity-[0.03] select-none z-0 mix-blend-multiply flex justify-center items-center">
-        <img 
-          src="/src/assets/images/pirate_ship_bg_1779738901287.png" 
-          alt="Sailing boat watermark"
-          className="w-[85%] max-w-[850px] object-contain blur-[1px] rotate-2 translate-y-24"
-          referrerPolicy="no-referrer"
-        />
-      </div>
+      <div className="absolute -top-40 -left-40 w-[420px] h-[420px] bg-indigo-100/45 rounded-full blur-3xl pointer-events-none" />
+      <div className="absolute -bottom-36 -right-36 w-[420px] h-[420px] bg-cyan-100/45 rounded-full blur-3xl pointer-events-none" />
 
       {/* HEADER PRINCIPAL NO ESTILO PIRATE BAY (Clean Light Branding) */}
       <header className="py-10 px-6 md:px-8 border-b border-slate-200 bg-white/90 backdrop-blur-xs shadow-xs relative z-10 text-center">
@@ -2591,8 +2584,15 @@ export default function App() {
           </div>
 
           {/* Clean Light-Themed Search Form */}
-          <div className="max-w-2xl mx-auto">
-            <form onSubmit={handleSearch} className="bg-white border-2 border-slate-900 rounded-2xl flex items-stretch overflow-hidden shadow-lg shadow-slate-200/50 transition-all focus-within:ring-4 focus-within:ring-indigo-100 focus-within:border-indigo-600">
+          <div className="max-w-3xl mx-auto relative">
+            <img
+              src={pirateShipBg}
+              alt="Embarcação decorativa"
+              className="absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-[58%] w-[360px] md:w-[520px] opacity-10 md:opacity-[0.15] pointer-events-none select-none"
+              referrerPolicy="no-referrer"
+            />
+
+            <form onSubmit={handleSearch} className="relative z-10 bg-white/95 border-2 border-slate-900 rounded-2xl flex items-stretch overflow-hidden shadow-lg shadow-slate-200/50 transition-all focus-within:ring-4 focus-within:ring-indigo-100 focus-within:border-indigo-600 backdrop-blur-xs">
               <div className="flex items-center px-4 flex-1 gap-2.5">
                 <Search className="w-5 h-5 text-slate-400 flex-shrink-0" />
                 <input 
@@ -2628,7 +2628,7 @@ export default function App() {
             </form>
 
             {/* APIs Count Badge */}
-            <div className="mt-4 flex items-center justify-center gap-2 flex-wrap">
+            <div className="mt-4 flex items-center justify-center gap-2 flex-wrap relative z-10">
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10.5px] font-mono font-bold bg-indigo-50 text-indigo-700 border border-indigo-100">
                 <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
                 Acervo de Indexação: <strong className="font-sans text-xs">{totalApis} APIs Ativas</strong> catalogadas no sistema
@@ -2639,163 +2639,176 @@ export default function App() {
             </div>
           </div>
 
-          {/* CATEGORY EXPLORER & FILTERS SYSTEM (Precise, beautiful filtering) */}
-          <div className="pt-6 border-t border-slate-100 max-w-4xl mx-auto space-y-4">
-            <div className="flex items-center justify-between px-1">
-              <h3 className="text-xs font-black uppercase tracking-wider text-slate-650 font-mono flex items-center gap-1.5">
-                <span>📁</span> Navegar por Categoria
-              </h3>
-              {(selectedCategory || selectedSubcategory || selectedRawCategory || query || rawCategorySearch.trim()) && (
-                <button
-                  onClick={() => {
-                    setSelectedCategory('');
-                    setSelectedSubcategory('');
-                    setSelectedRawCategory('');
-                    setRawCategorySearch('');
-                    setQuery('');
-                  }}
-                  className="text-[11px] font-bold text-rose-600 hover:text-rose-800 hover:underline transition cursor-pointer"
-                >
-                  Limpar Filtros [x]
-                </button>
-              )}
-            </div>
-
-            <div className="grid grid-cols-2 sm:grid-cols-5 gap-3">
-              {categoryIndex.categoryCards.map((cat) => {
-                const isActive = selectedCategory === cat.name;
-                return (
-                  <button
-                    key={cat.name}
-                    type="button"
-                    onClick={() => {
-                      if (isActive) {
-                        setSelectedCategory('');
-                        setSelectedSubcategory('');
-                      } else {
-                        setSelectedCategory(cat.name);
-                        setSelectedSubcategory('');
-                        setSelectedRawCategory('');
-                        setRawCategorySearch('');
-                        setQuery('');
-                      }
-                    }}
-                    className={`p-3 rounded-xl border flex flex-col items-center justify-center text-center gap-1.5 transition duration-200 cursor-pointer ${
-                      isActive
-                        ? "bg-indigo-600 border-indigo-650 text-white shadow-md shadow-indigo-650/10 scale-102"
-                        : "bg-white border-slate-200 hover:border-slate-350 hover:bg-slate-50 text-slate-800 shadow-sm"
-                    }`}
-                  >
-                    <span className="text-lg">{cat.icon}</span>
-                    <span className="text-[10.5px] font-black tracking-tight leading-tight">
-                      {cat.name}
-                    </span>
-                    <span className={`text-[10px] font-mono px-1.5 py-0.5 rounded border ${
-                      isActive
-                        ? "bg-white/15 border-white/25 text-white"
-                        : "bg-slate-100 border-slate-200 text-slate-500"
-                    }`}>
-                      {cat.count}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-
-            {categoryIndex.categoryCards.length === 0 && (
-              <p className="text-xs text-slate-500 font-mono text-center bg-slate-100 border border-slate-200 rounded-xl p-3">
-                Nenhuma categoria-mãe foi identificada neste recorte da busca atual.
-              </p>
-            )}
-
-            {/* Subcategories capsules drawer */}
-            {selectedCategory && (
-              <div className="bg-slate-100/70 border border-slate-205 p-3 rounded-xl animate-fade-in text-center space-y-1.5">
-                <div className="flex flex-wrap items-center justify-center gap-1.5">
-                  <button
-                    type="button"
-                    onClick={() => setSelectedSubcategory('')}
-                    className={`px-3 py-1 text-xs rounded-full transition font-bold cursor-pointer ${
-                      !selectedSubcategory
-                        ? "bg-slate-900 text-white shadow-xs"
-                        : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-50"
-                    }`}
-                  >
-                    Todas de {selectedCategory}
-                  </button>
-                  {selectedCategorySubOptions.map((sub) => {
-                    const isSubActive = selectedSubcategory === sub.name;
-                    return (
-                      <button
-                        key={sub.name}
-                        type="button"
-                        onClick={() => setSelectedSubcategory(isSubActive ? '' : sub.name)}
-                        className={`px-3 py-1 text-xs rounded-full transition font-bold cursor-pointer ${
-                          isSubActive
-                            ? "bg-indigo-600 text-white shadow-xs"
-                            : "bg-white border border-slate-250 text-slate-700 hover:bg-slate-50"
-                        }`}
-                      >
-                        {sub.name} ({sub.count})
-                      </button>
-                    );
-                  })}
+          {/* CATEGORY EXPLORER & FILTERS SYSTEM */}
+          <div className="pt-6 border-t border-slate-100 max-w-5xl mx-auto">
+            <div className="bg-white border border-slate-200 rounded-2xl p-4 md:p-5 shadow-sm space-y-5">
+              <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-black text-slate-800 tracking-tight">Categorias</h3>
+                  <p className="text-xs text-slate-500">
+                    Escolha o departamento, depois a subcategoria e finalize na categoria real.
+                  </p>
                 </div>
-              </div>
-            )}
-
-            {/* Raw category selector for massive catalogs */}
-            <div className="bg-slate-100/50 border border-slate-205 p-3 rounded-xl text-left space-y-2">
-              <div className="flex items-center justify-between gap-2">
-                <h4 className="text-[11px] font-black uppercase tracking-wide text-slate-700 font-mono">
-                  Categoria Real da API (Escalável)
-                </h4>
-                {selectedRawCategory && (
+                {(selectedCategory || selectedSubcategory || selectedRawCategory || query || rawCategorySearch.trim()) && (
                   <button
-                    type="button"
-                    onClick={() => setSelectedRawCategory('')}
-                    className="text-[11px] font-bold text-indigo-700 hover:text-indigo-900 cursor-pointer"
+                    onClick={() => {
+                      setSelectedCategory('');
+                      setSelectedSubcategory('');
+                      setSelectedRawCategory('');
+                      setRawCategorySearch('');
+                      setQuery('');
+                    }}
+                    className="text-[11px] font-bold text-rose-600 hover:text-rose-800 bg-rose-50 hover:bg-rose-100 border border-rose-200 px-3 py-1.5 rounded-lg transition cursor-pointer self-start md:self-auto"
                   >
-                    Remover
+                    Limpar filtros
                   </button>
                 )}
               </div>
-              <input
-                type="text"
-                value={rawCategorySearch}
-                onChange={(e) => setRawCategorySearch(e.target.value)}
-                placeholder="Digite uma categoria real (ex: fintech, weather, animals, education...)"
-                className="w-full bg-white border border-slate-250 rounded-lg px-3 py-2 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400"
-              />
-              <div className="flex flex-wrap gap-1.5">
-                {rawCategoryPreview.map((option) => {
-                  const isActive = selectedRawCategory === option.name;
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-5 gap-3">
+                {categoryIndex.categoryCards.map((cat) => {
+                  const isActive = selectedCategory === cat.name;
                   return (
                     <button
-                      key={option.name}
+                      key={cat.name}
                       type="button"
-                      onClick={() => setSelectedRawCategory(isActive ? '' : option.name)}
-                      className={`px-2.5 py-1 rounded-full text-[11px] border font-bold transition cursor-pointer ${
+                      onClick={() => {
+                        if (isActive) {
+                          setSelectedCategory('');
+                          setSelectedSubcategory('');
+                        } else {
+                          setSelectedCategory(cat.name);
+                          setSelectedSubcategory('');
+                          setSelectedRawCategory('');
+                          setRawCategorySearch('');
+                          setQuery('');
+                        }
+                      }}
+                      className={`p-3.5 rounded-xl border text-left transition duration-200 cursor-pointer ${
                         isActive
-                          ? "bg-indigo-600 text-white border-indigo-650"
-                          : "bg-white text-slate-700 border-slate-250 hover:bg-slate-50"
+                          ? "bg-slate-900 border-slate-900 text-white shadow-md"
+                          : "bg-slate-50 border-slate-200 hover:bg-white hover:border-slate-300 text-slate-800"
                       }`}
                     >
-                      {option.name} ({option.count})
+                      <div className="flex items-center justify-between mb-2">
+                        <span className="text-xl">{cat.icon}</span>
+                        <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full border ${
+                          isActive
+                            ? "bg-white/10 border-white/25 text-white"
+                            : "bg-white border-slate-200 text-slate-600"
+                        }`}>
+                          {cat.count}
+                        </span>
+                      </div>
+                      <p className="text-[11.5px] font-black leading-tight">{cat.name}</p>
                     </button>
                   );
                 })}
               </div>
-              {rawCategoryPreview.length === 0 && (
-                <p className="text-[11px] text-slate-500 font-mono">
-                  Nenhuma categoria encontrada para este termo.
-                </p>
+
+              {categoryIndex.categoryCards.length === 0 && (
+                <div className="bg-amber-50 border border-amber-150 text-amber-800 rounded-xl px-3 py-2 text-xs">
+                  Não há departamentos neste recorte atual. Use a busca de categorias reais logo abaixo.
+                </div>
               )}
-              {hiddenRawCategoryCount > 0 && (
-                <p className="text-[11px] text-slate-500 font-mono">
-                  +{hiddenRawCategoryCount} categorias adicionais. Refine a busca para localizar rapidamente.
-                </p>
+
+              {selectedCategory && (
+                <div className="bg-slate-50 border border-slate-200 rounded-xl p-3">
+                  <p className="text-[11px] font-semibold text-slate-600 mb-2">
+                    Subcategorias de <strong>{selectedCategory}</strong>
+                  </p>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setSelectedSubcategory('')}
+                      className={`px-3 py-1.5 text-xs rounded-full transition font-bold cursor-pointer ${
+                        !selectedSubcategory
+                          ? "bg-slate-900 text-white"
+                          : "bg-white border border-slate-200 text-slate-700 hover:bg-slate-100"
+                      }`}
+                    >
+                      Todas
+                    </button>
+                    {selectedCategorySubOptions.map((sub) => {
+                      const isSubActive = selectedSubcategory === sub.name;
+                      return (
+                        <button
+                          key={sub.name}
+                          type="button"
+                          onClick={() => setSelectedSubcategory(isSubActive ? '' : sub.name)}
+                          className={`px-3 py-1.5 text-xs rounded-full transition font-bold cursor-pointer ${
+                            isSubActive
+                              ? "bg-indigo-600 text-white"
+                              : "bg-white border border-slate-250 text-slate-700 hover:bg-slate-100"
+                          }`}
+                        >
+                          {sub.name} ({sub.count})
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
               )}
+
+              <div className="bg-slate-50 border border-slate-200 rounded-xl p-3.5 space-y-3">
+                <div className="flex items-center justify-between gap-2">
+                  <h4 className="text-[11.5px] font-black uppercase tracking-wide text-slate-700 font-mono">
+                    Categorias Reais
+                  </h4>
+                  {selectedRawCategory && (
+                    <button
+                      type="button"
+                      onClick={() => setSelectedRawCategory('')}
+                      className="text-[11px] font-bold text-indigo-700 hover:text-indigo-900 cursor-pointer"
+                    >
+                      Remover seleção
+                    </button>
+                  )}
+                </div>
+
+                <div className="relative">
+                  <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="text"
+                    value={rawCategorySearch}
+                    onChange={(e) => setRawCategorySearch(e.target.value)}
+                    placeholder="Buscar categoria real: foto, clima, fintech, games, educação..."
+                    className="w-full bg-white border border-slate-250 rounded-lg pl-9 pr-3 py-2 text-xs text-slate-700 focus:outline-none focus:ring-2 focus:ring-indigo-100 focus:border-indigo-400"
+                  />
+                </div>
+
+                <div className="flex flex-wrap gap-2">
+                  {rawCategoryPreview.map((option) => {
+                    const isActive = selectedRawCategory === option.name;
+                    return (
+                      <button
+                        key={option.name}
+                        type="button"
+                        onClick={() => setSelectedRawCategory(isActive ? '' : option.name)}
+                        className={`px-3 py-1.5 rounded-lg text-[11px] border font-semibold transition cursor-pointer ${
+                          isActive
+                            ? "bg-indigo-600 text-white border-indigo-650 shadow-xs"
+                            : "bg-white text-slate-700 border-slate-250 hover:bg-slate-100"
+                        }`}
+                      >
+                        {option.name} ({option.count})
+                      </button>
+                    );
+                  })}
+                </div>
+
+                {rawCategoryPreview.length === 0 && (
+                  <p className="text-[11px] text-slate-500">
+                    Nenhuma categoria real encontrada para esse termo.
+                  </p>
+                )}
+
+                {hiddenRawCategoryCount > 0 && (
+                  <p className="text-[11px] text-slate-500">
+                    +{hiddenRawCategoryCount} categorias adicionais. Continue digitando para filtrar.
+                  </p>
+                )}
+              </div>
             </div>
           </div>
 
