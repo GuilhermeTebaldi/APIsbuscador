@@ -514,7 +514,8 @@ export default function App() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           url: targetUrl,
-          method: requestMethod
+          method: requestMethod,
+          apiId: api.id
         })
       });
 
@@ -525,6 +526,10 @@ export default function App() {
       }
 
       const json = await response.json();
+      if (json?.autoBlocked) {
+        setAllApis((prev) => prev.filter((item) => item.id !== api.id));
+        setApiList((prev) => prev.filter((item) => item.id !== api.id));
+      }
       setCardResults(prev => ({
         ...prev,
         [api.id]: {
@@ -533,7 +538,10 @@ export default function App() {
           durationMs: json.durationMs || 50,
           data: json.data || json,
           source: 'proxy',
-          url: targetUrl
+          url: targetUrl,
+          error: json?.autoBlocked
+            ? `API removida automaticamente do catálogo: ${json?.blockedReason || 'falha recorrente'}`
+            : undefined
         }
       }));
     } catch (err: any) {
@@ -2572,14 +2580,12 @@ export default function App() {
               Pirate Free APIs
             </span>
             <span className="inline-block h-3 w-[1px] bg-slate-300 mx-1" />
-            <span className="text-[10px] font-mono text-slate-500">
-              O Índice de APIs Públicas
-            </span>
+         
           </div>
 
           <div className="space-y-2">
             <h1 className="text-2xl md:text-5xl font-black text-slate-900 tracking-tight font-display max-w-2xl mx-auto leading-none">
-              Inspecione o que tem dentro de cada API gratuitamente.
+              Busque API gratuitamente.
             </h1>
           </div>
 
@@ -2631,11 +2637,9 @@ export default function App() {
             <div className="mt-4 flex items-center justify-center gap-2 flex-wrap relative z-10">
               <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[10.5px] font-mono font-bold bg-indigo-50 text-indigo-700 border border-indigo-100">
                 <span className="h-2 w-2 rounded-full bg-emerald-500 animate-pulse" />
-                Acervo de Indexação: <strong className="font-sans text-xs">{totalApis} APIs Ativas</strong> catalogadas no sistema
+                Acervo: <strong className="font-sans text-xs">{totalApis} APIs Ativas</strong> 
               </span>
-              <span className="text-[10px] font-mono text-slate-400 select-none hidden sm:inline">
-                · Sem limite de chamadas ou CORS
-              </span>
+
             </div>
           </div>
 

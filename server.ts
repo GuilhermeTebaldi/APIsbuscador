@@ -1447,7 +1447,7 @@ const VERIFIED_APIs = [
 ];
 
 function buildLocalSearchFallback(query: string) {
-  const combinedList = [...DYNAMIC_APIs, ...VERIFIED_APIs];
+  const combinedList = getCombinedCatalogApis();
   const lowerQuery = query.toLowerCase();
   const matchedApis = combinedList.filter(api =>
     api.name.toLowerCase().includes(lowerQuery) ||
@@ -1592,7 +1592,35 @@ Retorne em formato estritamente estruturado JSON.`;
 const SECRET_STORE_DIR = path.join(process.cwd(), ".site-secret");
 const DYNAMIC_APIS_PATH = path.join(SECRET_STORE_DIR, "collected_apis.json");
 const LEGACY_DYNAMIC_APIS_PATH = path.join(process.cwd(), "collected_apis.json");
+const API_BLOCKLIST_PATH = path.join(SECRET_STORE_DIR, "api_blocklist.json");
+const API_HEALTH_STATE_PATH = path.join(SECRET_STORE_DIR, "api_health_state.json");
+
+type ApiBlockSource = "auto-proxy" | "bulk-audit" | "manual";
+
+interface ApiBlockEntry {
+  apiId: string;
+  host?: string;
+  blockedAt: string;
+  reason: string;
+  source: ApiBlockSource;
+  status?: number;
+  lastUrl?: string;
+}
+
+interface ApiHealthEntry {
+  apiId: string;
+  failStreak: number;
+  totalFails: number;
+  totalSuccess: number;
+  lastStatus?: number;
+  lastCheckedAt?: string;
+  lastUrl?: string;
+  blocked?: boolean;
+}
+
 let DYNAMIC_APIs: any[] = [];
+let API_BLOCKLIST: Record<string, ApiBlockEntry> = {};
+let API_HEALTH_STATE: Record<string, ApiHealthEntry> = {};
 
 function ensureSecretStore() {
   if (!fs.existsSync(SECRET_STORE_DIR)) {
@@ -1635,8 +1663,317 @@ function saveDynamicApis() {
   }
 }
 
+function loadApiBlocklist() {
+  try {
+    ensureSecretStore();
+    if (fs.existsSync(API_BLOCKLIST_PATH)) {
+      const content = fs.readFileSync(API_BLOCKLIST_PATH, "utf-8");
+      const parsed = JSON.parse(content);
+      if (parsed && typeof parsed === "object") {
+        API_BLOCKLIST = parsed;
+        console.log(`[Storage] Blocklist carregada com ${Object.keys(API_BLOCKLIST).length} API(s) bloqueada(s).`);
+      }
+    }
+  } catch (err) {
+    console.error("[Storage] Erro ao carregar blocklist:", err);
+  }
+}
+
+function saveApiBlocklist() {
+  try {
+    ensureSecretStore();
+    fs.writeFileSync(API_BLOCKLIST_PATH, JSON.stringify(API_BLOCKLIST, null, 2), "utf-8");
+  } catch (err) {
+    console.error("[Storage] Erro ao salvar blocklist:", err);
+  }
+}
+
+function loadApiHealthState() {
+  try {
+    ensureSecretStore();
+    if (fs.existsSync(API_HEALTH_STATE_PATH)) {
+      const content = fs.readFileSync(API_HEALTH_STATE_PATH, "utf-8");
+      const parsed = JSON.parse(content);
+      if (parsed && typeof parsed === "object") {
+        API_HEALTH_STATE = parsed;
+      }
+    }
+  } catch (err) {
+    console.error("[Storage] Erro ao carregar histórico de saúde:", err);
+  }
+}
+
+function saveApiHealthState() {
+  try {
+    ensureSecretStore();
+    fs.writeFileSync(API_HEALTH_STATE_PATH, JSON.stringify(API_HEALTH_STATE, null, 2), "utf-8");
+  } catch (err) {
+    console.error("[Storage] Erro ao salvar histórico de saúde:", err);
+  }
+}
+
+function normalizeHostFromUrl(rawUrl?: string) {
+  if (!rawUrl || typeof rawUrl !== "string") return "";
+  try {
+    return new URL(rawUrl).hostname.replace(/^www\./i, "").toLowerCase();
+  } catch {
+    return "";
+  }
+}
+
+function getCombinedCatalogApis() {
+  const blockedHosts = new Set(
+    Object.values(API_BLOCKLIST)
+      .map((entry) => entry.host || "")
+      .filter(Boolean)
+  );
+
+  const combined = [...DYNAMIC_APIs, ...VERIFIED_APIs];
+  return combined.filter((api) => {
+    if (!api || !api.id) return false;
+    if (API_BLOCKLIST[api.id]) return false;
+    const host = normalizeHostFromUrl(api.url);
+    if (host && blockedHosts.has(host)) return false;
+    return true;
+  });
+}
+
+function filterOutBlockedApis(list: any[]) {
+  const blockedHosts = new Set(
+    Object.values(API_BLOCKLIST)
+      .map((entry) => entry.host || "")
+      .filter(Boolean)
+  );
+
+  return (Array.isArray(list) ? list : []).filter((api) => {
+    if (!api || !api.id) return false;
+    if (API_BLOCKLIST[api.id]) return false;
+    const host = normalizeHostFromUrl(api.url);
+    if (host && blockedHosts.has(host)) return false;
+    return true;
+  });
+}
+
+function markApiBlocked(apiId: string, reason: string, source: ApiBlockSource, status?: number, lastUrl?: string) {
+  if (!apiId) return;
+
+  const foundApi = [...DYNAMIC_APIs, ...VERIFIED_APIs].find((api) => api.id === apiId);
+  const host = normalizeHostFromUrl(foundApi?.url || lastUrl);
+
+  API_BLOCKLIST[apiId] = {
+    apiId,
+    host: host || undefined,
+    blockedAt: new Date().toISOString(),
+    reason,
+    source,
+    status,
+    lastUrl
+  };
+
+  const dynamicBefore = DYNAMIC_APIs.length;
+  DYNAMIC_APIs = DYNAMIC_APIs.filter((api) => api.id !== apiId);
+  if (DYNAMIC_APIs.length !== dynamicBefore) {
+    saveDynamicApis();
+  }
+
+  API_HEALTH_STATE[apiId] = {
+    ...(API_HEALTH_STATE[apiId] || {
+      apiId,
+      failStreak: 0,
+      totalFails: 0,
+      totalSuccess: 0
+    }),
+    blocked: true,
+    lastStatus: status,
+    lastCheckedAt: new Date().toISOString(),
+    lastUrl
+  };
+
+  saveApiBlocklist();
+  saveApiHealthState();
+  console.warn(`[Health] API bloqueada automaticamente: ${apiId} (${reason})`);
+}
+
+function shouldAutoBlockFromStatus(status: number, failStreak: number) {
+  if (status === 401 || status === 403) return failStreak >= 2;
+  if (status === 404 || status === 410) return failStreak >= 3;
+  if (status >= 500) return failStreak >= 5;
+  return false;
+}
+
+function recordProxyHealthObservation(params: {
+  apiId?: string;
+  status?: number;
+  ok?: boolean;
+  url?: string;
+}) {
+  const { apiId, status, ok, url } = params;
+  if (!apiId || typeof apiId !== "string") return;
+  if (API_BLOCKLIST[apiId]) return;
+
+  const current = API_HEALTH_STATE[apiId] || {
+    apiId,
+    failStreak: 0,
+    totalFails: 0,
+    totalSuccess: 0
+  };
+
+  const nowIso = new Date().toISOString();
+  const hasSuccess = !!ok && typeof status === "number" && status >= 200 && status < 400;
+
+  if (hasSuccess) {
+    current.failStreak = 0;
+    current.totalSuccess += 1;
+  } else {
+    current.failStreak += 1;
+    current.totalFails += 1;
+  }
+
+  current.lastStatus = status;
+  current.lastCheckedAt = nowIso;
+  current.lastUrl = url;
+  API_HEALTH_STATE[apiId] = current;
+  saveApiHealthState();
+
+  if (!hasSuccess && typeof status === "number" && shouldAutoBlockFromStatus(status, current.failStreak)) {
+    const reason = `Falha recorrente detectada (HTTP ${status}, sequência ${current.failStreak})`;
+    markApiBlocked(apiId, reason, "auto-proxy", status, url);
+  }
+}
+
+function buildTestUrlForApi(api: any) {
+  const endpoint = api?.endpoints?.[0];
+  if (!endpoint) return api?.url || "";
+
+  let pathPart = String(endpoint.path || "");
+  if (!pathPart.startsWith("/")) {
+    pathPart = `/${pathPart}`;
+  }
+
+  if (Array.isArray(endpoint.pathParams)) {
+    for (const param of endpoint.pathParams) {
+      const fallback = encodeURIComponent(param?.defaultValue || "1");
+      pathPart = pathPart.replace(`:${param.name}`, fallback);
+    }
+  }
+
+  const query = new URLSearchParams();
+  if (Array.isArray(endpoint.queryParams)) {
+    for (const p of endpoint.queryParams) {
+      if (p?.defaultValue !== undefined && p?.defaultValue !== null && String(p.defaultValue).trim() !== "") {
+        query.set(String(p.name), String(p.defaultValue));
+      } else if (p?.required) {
+        query.set(String(p.name), "1");
+      }
+    }
+  }
+
+  const queryString = query.toString();
+  return `${api.url}${pathPart}${queryString ? `?${queryString}` : ""}`;
+}
+
+async function runBulkCatalogAudit(options?: { limit?: number; sampleOnly?: boolean }) {
+  const catalog = getCombinedCatalogApis();
+  const limit = options?.limit && options.limit > 0 ? options.limit : catalog.length;
+  const sampleOnly = !!options?.sampleOnly;
+  const targets = catalog.slice(0, limit);
+
+  const report: any[] = [];
+  let blockedCount = 0;
+  const startedAt = Date.now();
+
+  for (const api of targets) {
+    const testUrl = buildTestUrlForApi(api);
+    const method = api?.endpoints?.[0]?.method || "GET";
+
+    let status = 0;
+    let ok = false;
+    let errorMessage = "";
+    let dataPreview: any = null;
+
+    try {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 12000);
+      const response = await fetch(testUrl, {
+        method,
+        headers: {
+          "Accept": "application/json, text/plain, */*",
+          "User-Agent": "API-Pirate-Bulk-Audit/1.0"
+        },
+        signal: controller.signal
+      });
+      clearTimeout(timeout);
+
+      status = response.status;
+      ok = response.ok;
+
+      const contentType = response.headers.get("content-type") || "";
+      if (contentType.includes("application/json")) {
+        const data = await response.json();
+        dataPreview = data && typeof data === "object"
+          ? Object.keys(data).slice(0, 10)
+          : data;
+      } else {
+        const text = await response.text();
+        dataPreview = text.slice(0, 140);
+      }
+
+      if ((status === 401 || status === 403 || status === 404 || status === 410) && !sampleOnly) {
+        markApiBlocked(
+          api.id,
+          `Audit em lote detectou API indisponível/fechada (HTTP ${status})`,
+          "bulk-audit",
+          status,
+          testUrl
+        );
+        blockedCount += 1;
+      }
+    } catch (err: any) {
+      errorMessage = err?.name === "AbortError"
+        ? "timeout"
+        : (err?.message || "network_error");
+
+      if (!sampleOnly) {
+        const rec: ApiHealthEntry = API_HEALTH_STATE[api.id] || {
+          apiId: api.id,
+          failStreak: 0,
+          totalFails: 0,
+          totalSuccess: 0
+        };
+        rec.failStreak += 1;
+        rec.totalFails += 1;
+        rec.lastCheckedAt = new Date().toISOString();
+        rec.lastUrl = testUrl;
+        rec.lastStatus = 0;
+        API_HEALTH_STATE[api.id] = rec;
+        saveApiHealthState();
+      }
+    }
+
+    report.push({
+      apiId: api.id,
+      apiName: api.name,
+      status,
+      ok,
+      testUrl,
+      preview: dataPreview,
+      error: errorMessage
+    });
+  }
+
+  return {
+    audited: targets.length,
+    blocked: blockedCount,
+    sampleOnly,
+    durationMs: Date.now() - startedAt,
+    report
+  };
+}
+
 // Initial hydration
 loadDynamicApis();
+loadApiBlocklist();
+loadApiHealthState();
 
 // ENDPOINT: COLLECT AUTOMATICALLY & TEST CUSTOM API
 app.post("/api/collect", async (req, res) => {
@@ -1651,7 +1988,7 @@ app.post("/api/collect", async (req, res) => {
   }
 
   try {
-    const allApis = [...DYNAMIC_APIs, ...VERIFIED_APIs];
+    const allApis = getCombinedCatalogApis();
     
     // Check duplication
     const alreadyExists = allApis.some(api => {
@@ -1826,6 +2163,25 @@ Retorne unicamente o JSON válido, sem markdown ou caracteres extras de código.
         parsedApiBlock.id = `${parsedApiBlock.id}-${Date.now().toString().slice(-3)}`;
       }
 
+      const parsedHost = normalizeHostFromUrl(parsedApiBlock.url || url);
+      let unblockedAny = false;
+      for (const [blockedId, blockedEntry] of Object.entries(API_BLOCKLIST)) {
+        const sameId = blockedId === parsedApiBlock.id;
+        const sameHost = !!parsedHost && blockedEntry.host === parsedHost;
+        if (sameId || sameHost) {
+          delete API_BLOCKLIST[blockedId];
+          if (API_HEALTH_STATE[blockedId]) {
+            API_HEALTH_STATE[blockedId].blocked = false;
+            API_HEALTH_STATE[blockedId].failStreak = 0;
+          }
+          unblockedAny = true;
+        }
+      }
+      if (unblockedAny) {
+        saveApiBlocklist();
+        saveApiHealthState();
+      }
+
       DYNAMIC_APIs.unshift(parsedApiBlock);
       saveDynamicApis();
 
@@ -1846,10 +2202,61 @@ Retorne unicamente o JSON válido, sem markdown ou caracteres extras de código.
   }
 });
 
+app.get("/api/admin/blocked", (req, res) => {
+  const entries = Object.values(API_BLOCKLIST).sort((a, b) => b.blockedAt.localeCompare(a.blockedAt));
+  res.json({
+    totalBlocked: entries.length,
+    blocked: entries
+  });
+});
+
+app.post("/api/admin/unblock", (req, res) => {
+  const { apiId } = req.body || {};
+  if (!apiId || typeof apiId !== "string") {
+    return res.status(400).json({ ok: false, message: "apiId é obrigatório." });
+  }
+
+  if (!API_BLOCKLIST[apiId]) {
+    return res.status(404).json({ ok: false, message: "API não está bloqueada." });
+  }
+
+  delete API_BLOCKLIST[apiId];
+  if (API_HEALTH_STATE[apiId]) {
+    API_HEALTH_STATE[apiId].blocked = false;
+    API_HEALTH_STATE[apiId].failStreak = 0;
+  }
+  saveApiBlocklist();
+  saveApiHealthState();
+
+  return res.json({ ok: true, message: `API ${apiId} removida da blocklist.` });
+});
+
+app.post("/api/admin/audit", async (req, res) => {
+  const { limit, sampleOnly = false } = req.body || {};
+  const safeLimit = typeof limit === "number" && limit > 0 ? Math.min(limit, 2000) : undefined;
+
+  try {
+    const result = await runBulkCatalogAudit({
+      limit: safeLimit,
+      sampleOnly: !!sampleOnly
+    });
+
+    return res.json({
+      ok: true,
+      ...result
+    });
+  } catch (err: any) {
+    return res.status(500).json({
+      ok: false,
+      error: err?.message || "Falha inesperada na auditoria."
+    });
+  }
+});
+
 // ENDPOINT: SEARCH OVERRIDE WITH DYNAMIC API INTEGRATION
 app.post("/api/search", async (req, res) => {
   const { query } = req.body;
-  const combinedList = [...DYNAMIC_APIs, ...VERIFIED_APIs];
+  const combinedList = getCombinedCatalogApis();
   if (!query || typeof query !== "string") {
     return res.status(200).json({
       correctedQuery: "",
@@ -1859,12 +2266,15 @@ app.post("/api/search", async (req, res) => {
   }
 
   const result = await searchApisWithGoogle(query);
+  if (Array.isArray(result?.apis)) {
+    result.apis = filterOutBlockedApis(result.apis);
+  }
   res.json(result);
 });
 
 // ENDPOINT: SEED DEFAULT SUGGESTIONS
 app.get("/api/defaults", (req, res) => {
-  const combinedList = [...DYNAMIC_APIs, ...VERIFIED_APIs];
+  const combinedList = getCombinedCatalogApis();
   res.json({
     correctedQuery: "Sugestões Populares",
     explanation: "Selecione uma destas APIs públicas para começar a explorar e testar imediatamente na tela de visualização ampliada!",
@@ -1876,7 +2286,7 @@ app.get("/api/defaults", (req, res) => {
 // ENDPOINT: PROXY
 // Makes real backend proxy requests to public APIs, avoiding browser CORS blocks completely!
 app.post("/api/proxy", async (req, res) => {
-  const { url, method = "GET", headers = {}, body } = req.body;
+  const { url, method = "GET", headers = {}, body, apiId } = req.body;
   
   if (!url || typeof url !== "string") {
     return res.status(400).json({ error: "Parâmetro 'url' é obrigatório no corpo da requisição." });
@@ -1914,15 +2324,31 @@ app.post("/api/proxy", async (req, res) => {
       responseData = await proxyResponse.text();
     }
 
+    recordProxyHealthObservation({
+      apiId,
+      status: proxyResponse.status,
+      ok: proxyResponse.ok,
+      url
+    });
+    const autoBlocked = !!(apiId && API_BLOCKLIST[apiId]);
+
     res.json({
       status: proxyResponse.status,
       statusText: proxyResponse.statusText,
       headers: Object.fromEntries(proxyResponse.headers.entries()),
       data: responseData,
       durationMs,
-      ok: proxyResponse.ok
+      ok: proxyResponse.ok,
+      autoBlocked,
+      blockedReason: autoBlocked ? API_BLOCKLIST[apiId]?.reason : undefined
     });
   } catch (error: any) {
+    recordProxyHealthObservation({
+      apiId,
+      status: 0,
+      ok: false,
+      url
+    });
     res.status(500).json({
       ok: false,
       error: error.message || "Erro desconhecido ao conectar com o servidor da API."
